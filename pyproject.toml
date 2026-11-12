@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modelbench"
+version = "2.0.0"
+description = "Zero-dependency deterministic benchmark for practical LLM & Agent wisdom, execution, and stability"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "ZIRAN456" }
+]
+keywords = [
+    "llm", "benchmark", "agent", "evaluation", "reliability",
+    "flip-rate", "tool-calling", "zero-dependency"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.scripts]
+modelbench = "modelbench.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ZIRAN456/modelbench"
+Repository = "https://github.com/ZIRAN456/modelbench.git"
+Issues = "https://github.com/ZIRAN456/modelbench/issues"
+
+[tool.setuptools.packages.find]
+include = ["modelbench*"]
+exclude = ["tests*"]

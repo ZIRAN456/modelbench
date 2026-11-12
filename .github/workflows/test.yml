@@ -1,0 +1,59 @@
+name: ModelBench CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  selftest:
+    name: selftest (py${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Verify package uses Python standard library only
+        shell: python
+        run: |
+          import ast, pathlib, sys
+          local_mods = {p.stem for p in pathlib.Path("modelbench").glob("*.py")} | {"modelbench"}
+          third = set()
+          for py in list(pathlib.Path("modelbench").glob("*.py")) + [pathlib.Path("modelbench.py")]:
+              tree = ast.parse(py.read_text(encoding="utf-8"))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      for a in node.names:
+                          top = a.name.split(".")[0]
+                          if top not in sys.stdlib_module_names and top not in local_mods:
+                              third.add(top)
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                      top = (node.module or "").split(".")[0]
+                      if top and top not in sys.stdlib_module_names and top not in local_mods:
+                          third.add(top)
+          if third:
+              raise SystemExit(f"non-stdlib imports found: {sorted(third)}")
+          print("All source files strictly stdlib-only.")
+
+      - name: Install package in editable mode
+        run: pip install -e .
+
+      - name: Run selftest via direct execution
+        run: python modelbench.py selftest
+
+      - name: Run selftest via CLI entrypoint
+        run: modelbench selftest
+
+      - name: Run adversarial regression tests
+        run: python -m unittest discover -s tests -v
