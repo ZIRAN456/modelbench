@@ -116,7 +116,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     pr.add_argument("--api-key", default=None, help="API key (or set OPENAI_API_KEY)")
     pr.add_argument("--workers", type=int, default=4)
     pr.add_argument("--timeout", type=float, default=120.0)
-    pr.add_argument("--max-tokens", type=int, default=8192)
+    pr.add_argument("--max-tokens", type=int, default=65536)
     pr.add_argument("--reasoning-effort", choices=["low", "medium", "high", "max"], default=None,
                     help="Optional reasoning_effort passed in the request body (model/runtime must support it)")
     pr.add_argument("--skip-selftest", action="store_true")

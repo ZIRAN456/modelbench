@@ -21,7 +21,7 @@
 
 ---
 
-## 57-Item Practical Suite / 42 Paired Scoring Units (`--profile full`)
+## 68-Item Practical Suite / 42 Paired Scoring Units (`--profile full`)
 
 **68 raw items collapse into 42 scoring units** (19 Judgment / 23 Execution; `--profile quick` runs a faster subset with shorter contexts). Five categories that every model used to ace are now replaced by paired **2x2 adversarial matrices** (double-fault / single-fault A / single-fault B / clean) scored all-or-nothing:
 
@@ -29,8 +29,8 @@
 
 | Axis | Categories | What It Catches |
 |---|---|---|
-| **Judgment (25)** | `root_cause`, `root_cause_chain`, `code_fix`, `code_hard`, `code_stress`, `trap_detect`, `cross_audit` | Cross-module cascading failure attribution, algorithmic edge cases (cross-midnight windows, retry budget circuit breakers, 25k-item $O(N)$ latency & input-mutation guards), contradictory data traps, cross-table ledger reconciliation |
-| **Execution (25)** | `tool_recovery`, `tool_adversarial`, `tool_deep_chain`, `needle_fidelity`, `long_reversal`, `multi_reversal`, `patch_discipline`, `strict_redline` | Stale cache verification, unit-drift pagination, write-lock retries + post-write readback type safety (`"123"` vs `123`), maintenance freeze-window write aborts, 55k-char multi-needle overrides, surgical config patching, medical/secret-echo redlines |
+| **Judgment (33 items / 19 units)** | `root_cause`, `root_cause_chain`, `code_fix`, `code_hard`, `code_stress`, `trap_detect`, `cross_audit` | Cross-module cascading failure attribution, algorithmic edge cases (cross-midnight windows, retry budget circuit breakers, 25k-item $O(N)$ latency & input-mutation guards), contradictory data traps, cross-table ledger reconciliation |
+| **Execution (35 items / 23 units)** | `tool_recovery`, `tool_adversarial`, `tool_deep_chain`, `needle_fidelity`, `long_reversal`, `multi_reversal`, `patch_discipline`, `strict_redline` | Stale cache verification, unit-drift pagination, write-lock retries + post-write readback type safety (`"123"` vs `123`), maintenance freeze-window write aborts, 55k-char multi-needle overrides, surgical config patching, medical/secret-echo redlines |
 | **Stability Probes** | `variant_group` (3 groups × 3 variants) & `stress_group` (4 clean/55k-long pairs) | Measures intra-item `flip_rate` across repeated `temperature=0` trials, `prompt_drop` under colloquial/noisy phrasing, and `stress_drop` under 55k-char heterogeneous distractions |
 
 ---
@@ -61,6 +61,8 @@ modelbench report runs/eval_results.jsonl
 modelbench inspect runs/eval_results.jsonl --only-failed --limit 20
 ```
 
+> `--max-tokens` defaults to **65536**; lower it for models with smaller output limits. `--reasoning-effort {low,medium,high,max}` sets the provider's thinking budget where supported. A per-item `max_tokens` in the suite overrides the run-wide budget for long tasks.
+
 ---
 
 ## Sample Scorecard Output
@@ -68,7 +70,7 @@ modelbench inspect runs/eval_results.jsonl --only-failed --limit 20
 ```
 ModelBench v2 实干家评测战报 | 批次: 20261112-192251-sample | 套件指纹: d3961f46
 ----------------------------------------------------------------------------------------------------------------------------------------
-模型                                   裸总分     总率       95%CI     智慧     执行    翻转    口语跌    水压跌    P50    膨胀比 最弱分类                     画像结论
+模型                                   裸总分     总率       95%CI     审慎     执行    翻转    口语跌    水压跌    P50    膨胀比 最弱分类                     画像结论
 ----------------------------------------------------------------------------------------------------------------------------------------
 model-pro-reasoning              149/150  99.3%   [92,100]% 100.0%  98.7%    2%     0%     0%  12.7s  6.46x strict_redline=94%       可托付实干主力
 model-balanced-medium            146/150  97.3%    [88,99]% 100.0%  94.7%    2%     0%     0%   7.7s  5.12x tool_adversarial=80%     可托付实干主力

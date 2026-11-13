@@ -175,7 +175,7 @@ def _run_single_trial(
             api_key=api_key,
             tools=tools,
             temperature=0.0,
-            max_tokens=max_tokens,
+            max_tokens=int(item.get("max_tokens", max_tokens)),
             timeout_s=timeout_s,
             extra_body=extra_body,
         )
@@ -303,7 +303,7 @@ def run_benchmark(
     api_key: Optional[str] = None,
     workers: int = 4,
     timeout_s: float = 120.0,
-    max_tokens: int = 8192,
+    max_tokens: int = 65536,
     cats: Optional[List[str]] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
     reasoning_effort: Optional[str] = None,

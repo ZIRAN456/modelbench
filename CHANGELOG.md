@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.2.7 — 2026-11-14
+
+### Changed
+- `--max-tokens` default raised from **8192 → 65536**. The old budget truncated
+  long reasoning/code items (notably the 55k-char Unicode code task) even when
+  the provider supported a larger output window. Lower it explicitly for models
+  with smaller output limits.
+- Runner now honors a per-item `max_tokens` override from the suite; the Unicode
+  long item carries 65536 instead of relying on the run-wide budget alone.
+
+### Docs
+- README / README_CN: corrected suite counts (68 raw items; 33 Judgment / 35
+  Execution; 19 / 23 scoring units; quick profile is 66 items), refreshed the
+  sample scorecard header from `智慧` to `审慎`, and documented the
+  `--max-tokens` / `--reasoning-effort` knobs.
+
+No prompt or grader changes in this release; the suite fingerprint is unchanged,
+but long-item scores can differ because the output budget is larger.
+
 ## v2.2.6 — 2026-11-13
 
 ### Fixed — grader crashed on audit twins (`float_tol: null`)

@@ -23,14 +23,14 @@
 
 ## 68 题 / 42 个成对计分单位（`--profile full`）
 
-完整版 68 道原始题收敛为 **42 个计分单位**（审慎 19 / 执行 23）（`--profile quick` 为 52 题快速筛查版，上下文更短）。原先被全员满分的 5 个类目已下线，替换为**成对 2×2 对抗矩阵**（双故障 / 单故障A / 单故障B / 双正常），**同一组的变体全部答对方得 1 分**，单边启发式拿不到半分：
+完整版 68 道原始题收敛为 **42 个计分单位**（审慎 19 / 执行 23）（`--profile quick` 为 66 题快速筛查版，上下文更短）。原先被全员满分的 5 个类目已下线，替换为**成对 2×2 对抗矩阵**（双故障 / 单故障A / 单故障B / 双正常），**同一组的变体全部答对方得 1 分**，单边启发式拿不到半分：
 
 > **术语**：**审慎轴**（内部键 `wisdom`，旧称「智慧轴」）测的是细读、核对、因果定位与规范遵循，**不是智力测验**；要测「谁更聪明」需另设开放题与裁判。
 
 | 维度 | 题型覆盖 | 专治哪类虚胖 |
 |---|---|---|
-| **审慎轴（27 题）** | `root_cause`、`root_cause_chain`、`code_fix`、`code_hard`、`code_stress`、`trap_detect`、`cross_audit` | 跨模块雪崩因果追根、跨午夜时间窗与重试熔断器、2.5 万条 $O(N)$ 压测与防篡改入参、矛盾陷阱、分渠道跨表对账 |
-| **执行轴（27 题）** | `tool_recovery`、`tool_adversarial`、`tool_deep_chain`、`needle_fidelity`、`long_reversal`、`multi_reversal`、`patch_discipline`、`strict_redline` | 假缓存核验、分页单位漂移、写锁冲突重试 + 写后读回校验类型（抓 `"123"` 冒充 `123`）、冻结期禁写刹车、5.5 万字五针提取与四步撤回、局部最小补丁、防凭据回显与医疗话术绕过红线 |
+| **审慎轴（33 题 / 19 个计分单位）** | `root_cause`、`root_cause_chain`、`code_fix`、`code_hard`、`code_stress`、`trap_detect`、`cross_audit` | 跨模块雪崩因果追根、跨午夜时间窗与重试熔断器、2.5 万条 $O(N)$ 压测与防篡改入参、矛盾陷阱、分渠道跨表对账 |
+| **执行轴（35 题 / 23 个计分单位）** | `tool_recovery`、`tool_adversarial`、`tool_deep_chain`、`needle_fidelity`、`long_reversal`、`multi_reversal`、`patch_discipline`、`strict_redline` | 假缓存核验、分页单位漂移、写锁冲突重试 + 写后读回校验类型（抓 `"123"` 冒充 `123`）、冻结期禁写刹车、5.5 万字五针提取与四步撤回、局部最小补丁、防凭据回显与医疗话术绕过红线 |
 | **稳定性探针** | 等价措辞三变体（3 组 × 3 变体）+ 5.5 万字长水压对照（4 组） | 同题 `temperature=0` 多遍重跑翻转率（`flip_rate`）、规范/口语/带噪切换跌落（`prompt_drop`）、高水压长上下文跌落（`stress_drop`） |
 
 ---
@@ -60,6 +60,8 @@ modelbench run \
 modelbench report runs/eval_results.jsonl
 modelbench inspect runs/eval_results.jsonl --only-failed --limit 20
 ```
+
+> `--max-tokens` 默认 **65536**；模型输出上限较小时用该参数调低。`--reasoning-effort {low,medium,high,max}` 可按模型支持情况设置思考档位；题库项自带的 `max_tokens` 会覆盖运行级预算（用于长题）。
 
 ---
 

@@ -681,6 +681,7 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
         "unicode_weakref_test": True,
         "unicode_cf_pool": unicode_cf_pool,
         "timeout_s": 4.0,
+        "max_tokens": 65536,
         "prompt": (
             "Implement a high-performance event message router class `MessageRouter` in Python with the following API:\n"
             "- `subscribe(self, topic: str, handler: callable) -> None`\n"
