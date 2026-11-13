@@ -198,7 +198,7 @@ def format_report(path: str, batch: Optional[str] = None) -> str:
     lines = [
         f"ModelBench v2 实干家评测战报 | 批次: {run_id} | 套件指纹: {','.join(sorted(gvers))}",
         "-" * 136,
-        f"{'模型':30s} {'裸总分':>9s} {'总率':>6s} {'95%CI':>11s} {'智慧':>6s} {'执行':>6s} {'翻转':>5s} {'口语跌':>6s} {'水压跌':>6s} {'P50':>6s} {'膨胀比':>6s} {'最弱分类':24s} 画像结论",
+        f"{'模型':30s} {'裸总分':>9s} {'总率':>6s} {'95%CI':>11s} {'审慎':>6s} {'执行':>6s} {'翻转':>5s} {'口语跌':>6s} {'水压跌':>6s} {'P50':>6s} {'膨胀比':>6s} {'最弱分类':24s} 画像结论",
         "-" * 136,
     ]
     summaries = {m: analyze_model(recs) for m, recs in by_model.items()}
@@ -236,7 +236,7 @@ def format_report(path: str, batch: Optional[str] = None) -> str:
     lines.append("")
     lines.append("-" * 136)
     lines.append("成对计分（同组变体全对才得 1 分；单边启发式=0）:")
-    lines.append(f"{'模型':30s} {'成对分':>7s} {'单位':>5s} {'智慧':>6s} {'执行':>6s} {'缺件组':>6s}")
+    lines.append(f"{'模型':30s} {'成对分':>7s} {'单位':>5s} {'审慎':>6s} {'执行':>6s} {'缺件组':>6s}")
     for m, ps in sorted(paired["models"].items(), key=lambda kv: kv[1]["score"], reverse=True):
         ax = ps["axis_scores"]
         lines.append(

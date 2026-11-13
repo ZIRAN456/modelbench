@@ -23,11 +23,13 @@
 
 ## 57-Item Practical Suite / 42 Paired Scoring Units (`--profile full`)
 
-**68 raw items collapse into 42 scoring units** (19 Wisdom / 23 Execution; `--profile quick` runs a faster subset with shorter contexts). Five categories that every model used to ace are now replaced by paired **2x2 adversarial matrices** (double-fault / single-fault A / single-fault B / clean) scored all-or-nothing:
+**68 raw items collapse into 42 scoring units** (19 Judgment / 23 Execution; `--profile quick` runs a faster subset with shorter contexts). Five categories that every model used to ace are now replaced by paired **2x2 adversarial matrices** (double-fault / single-fault A / single-fault B / clean) scored all-or-nothing:
+
+> **Terminology**: the **Judgment** axis (internal key `wisdom`, formerly "Wisdom") measures close reading, reconciliation, root-cause attribution and rule compliance — **not** an IQ test.
 
 | Axis | Categories | What It Catches |
 |---|---|---|
-| **Wisdom (25)** | `root_cause`, `root_cause_chain`, `code_fix`, `code_hard`, `code_stress`, `trap_detect`, `cross_audit` | Cross-module cascading failure attribution, algorithmic edge cases (cross-midnight windows, retry budget circuit breakers, 25k-item $O(N)$ latency & input-mutation guards), contradictory data traps, cross-table ledger reconciliation |
+| **Judgment (25)** | `root_cause`, `root_cause_chain`, `code_fix`, `code_hard`, `code_stress`, `trap_detect`, `cross_audit` | Cross-module cascading failure attribution, algorithmic edge cases (cross-midnight windows, retry budget circuit breakers, 25k-item $O(N)$ latency & input-mutation guards), contradictory data traps, cross-table ledger reconciliation |
 | **Execution (25)** | `tool_recovery`, `tool_adversarial`, `tool_deep_chain`, `needle_fidelity`, `long_reversal`, `multi_reversal`, `patch_discipline`, `strict_redline` | Stale cache verification, unit-drift pagination, write-lock retries + post-write readback type safety (`"123"` vs `123`), maintenance freeze-window write aborts, 55k-char multi-needle overrides, surgical config patching, medical/secret-echo redlines |
 | **Stability Probes** | `variant_group` (3 groups × 3 variants) & `stress_group` (4 clean/55k-long pairs) | Measures intra-item `flip_rate` across repeated `temperature=0` trials, `prompt_drop` under colloquial/noisy phrasing, and `stress_drop` under 55k-char heterogeneous distractions |
 

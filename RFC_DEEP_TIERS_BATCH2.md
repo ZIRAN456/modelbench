@@ -14,7 +14,7 @@
 
 ## 5 道深水成对对抗题目详细规程
 
-### 题目一【智慧轴·跨表对账】：`wisdom_cross_audit_drift_tz`
+### 题目一【审慎轴·跨表对账】：`wisdom_cross_audit_drift_tz`
 - **考核目标**：多币种时序对账、合法跨月补结 vs 汇差与丢单并发多标签诊断。
 - **2×2 变体矩阵**：
   - **变体 00（完美对平）**：包含跨月正常结算（上月 10-31 交易次月 11-01 正常清算，汇率锁定成交日 T+0），总账平，输出 `diff_type: ["CLEAN"]`；
@@ -25,7 +25,7 @@
 
 ---
 
-### 题目二【智慧轴·因果链诊断】：`wisdom_chain_distributed_shadow`
+### 题目二【审慎轴·因果链诊断】：`wisdom_chain_distributed_shadow`
 - **考核目标**：分布式链路真假超时穿透。
 - **2×2 变体矩阵**：
   - **变体 00（下游真慢，线程耗尽）**：下游 DB 锁导致 upstream trace > 5000ms，网关 504，网关 worker 堆栈显示处于 `socket_read_wait`，元凶为 `DOWNSTREAM_DEP_POOL_EXHAUSTED`；
@@ -36,7 +36,7 @@
 
 ---
 
-### 题目三【智慧轴·代码抗突变】：`wisdom_code_unicode_and_leak`
+### 题目三【审慎轴·代码抗突变】：`wisdom_code_unicode_and_leak`
 - **考核目标**：不可见控制字符清洗 + 绑定方法弱引用生命周期管理。
 - **沙箱工程与判定规则**：
   - 实现 `MessageRouter.subscribe(topic, handler)` 与 `publish(topic, payload)`；
