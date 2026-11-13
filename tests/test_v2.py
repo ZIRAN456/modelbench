@@ -1151,6 +1151,18 @@ class TestAuditPairingRegressions(unittest.TestCase):
             grade_item(item, '{"consistent": true, "computed_total": 1250}')[0], 0
         )
 
+    def test_audit_prompt_explains_k_expansion(self):
+        checked = 0
+        for item in self.full.values():
+            prompt = item.get("prompt") or ""
+            if "Audit the financial note" not in prompt:
+                continue
+            self.assertIn("expanding any `k` suffix", prompt, item["id"])
+            self.assertIn("`12k` -> `12000`, not `12`", prompt, item["id"])
+            self.assertNotIn("without the 'k' suffix", prompt, item["id"])
+            checked += 1
+        self.assertGreaterEqual(checked, 5)
+
     def test_long_audit_consistent_twin_uses_core_memo(self):
         item = self.full["wisdom_stress_long_consistent_true"]
         self.assertEqual(item["expected"], {"consistent": True, "computed_total": 971})

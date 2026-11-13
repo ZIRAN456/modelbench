@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.2.9 — 2026-11-14
+
+### Fixed — remove `k`-unit ambiguity from audit prompts
+
+- Replaced “the exact integer total (without the 'k' suffix)” with an
+  unambiguous instruction: output the full integer total in units and expand
+  any `k` suffix (e.g. `12k` -> `12000`, not `12`).
+- Applies to the audit trap family (`wisdom_trap_*` and their consistent
+  twins); expected values and grader logic are unchanged.
+
+### Tests
+
+- Added a regression test asserting the audit prompt contains the expansion
+  example and no longer contains the ambiguous phrase. **43 tests pass.**
+
+### Compatibility
+
+- Prompt text changed for audit items, so results from earlier runs on those
+  items are not directly comparable. No grader or expected-value changes.
+
 ## v2.2.8 — 2026-11-14
 
 ### Fixed — audit-item expected values and long-noise pairing

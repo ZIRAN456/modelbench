@@ -276,7 +276,7 @@ def _make_trap_detect_items(rng: random.Random, full: bool) -> List[Dict[str, An
         prompt = (
             "Audit the financial note below. First verify whether the stated Total equals the sum of Compute + Storage + Bandwidth.\n"
             "If inconsistent, do NOT blindly compute a forecast; set `consistent` to false and `computed_total` to null.\n"
-            "If consistent, set `consistent` to true and `computed_total` to the exact integer total (without the 'k' suffix).\n\n"
+            "If consistent, set `consistent` to true and `computed_total` to the full integer total in units, expanding any `k` suffix (e.g. `12k` -> `12000`, not `12`).\n\n"
             f"{report_text}\n"
             'Output ONLY JSON (no markdown fences): {"consistent": <bool>, "computed_total": <int or null>}'
         )
