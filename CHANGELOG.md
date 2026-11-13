@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.2.6 — 2026-11-13
+
+### Fixed — grader crashed on audit twins (`float_tol: null`)
+- The synthesized `*_consistent_true` audit twins were created with an explicit
+  `"float_tol": null`; `_grade_json_exact` then called `float(None)` and raised,
+  so those trials were recorded as `grader_error` and scored 0 **no matter what
+  the model answered** (6 of 136 trials in a full two-rep run).
+- Graders now use `_tol_of()` (missing **or** `None` -> `1e-3`, non-numeric ->
+  `1e-3`); `bank._pair_audit_trap_items` no longer emits the key when the item
+  has no tolerance.
+- Regression test: no suite item may carry `float_tol=None`, and a `json_exact`
+  item with `float_tol: null` must still grade correctly (37 tests total).
+
+### Added
+- `--reasoning-effort {low,medium,high,max}` on `modelbench run`: forwarded as
+  `reasoning_effort` in the request body and stored per trial, so one model can
+  be benchmarked at different thinking budgets (verified on DeepSeek v4.1 Flash,
+  where the parameter changes `reasoning_tokens`).
+- `scripts/compare_runs.py`: side-by-side comparison of two JSONL runs — raw,
+  paired score, per-axis, faults, P50, thinking bloat, mean reasoning tokens,
+  worst category.
+
 ## v2.2.5 — 2026-11-13
 
 Documentation / naming release. **No prompt or grading change**: the suite

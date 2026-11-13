@@ -1135,3 +1135,27 @@ class TestPairedScoring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFloatTolNoneRegression(unittest.TestCase):
+    """Regression: an explicit float_tol=None used to raise TypeError inside the grader."""
+
+    def test_suite_items_do_not_carry_explicit_none_float_tol(self):
+        for profile in ("quick", "full"):
+            for it in generate_suite(seed=20261112, profile=profile):
+                self.assertFalse(
+                    "float_tol" in it and it["float_tol"] is None,
+                    f"{it['id']} carries float_tol=None",
+                )
+
+    def test_grader_tolerates_none_tolerance(self):
+        item = {
+            "id": "ft_none",
+            "grader": "json_exact",
+            "expected": {"consistent": True, "computed_total": 1200},
+            "forbid_fences": True,
+            "forbid_prose": True,
+            "float_tol": None,
+        }
+        passed, reason = grade_item(item, '{"consistent": true, "computed_total": 1200}')
+        self.assertEqual(passed, 1, reason)

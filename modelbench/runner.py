@@ -144,6 +144,7 @@ def _run_single_trial(
     api_key: Optional[str],
     timeout_s: float,
     max_tokens: int,
+    extra_body: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     messages: List[Dict[str, Any]] = [{"role": "user", "content": item["prompt"]}]
     tools = item.get("tools")
@@ -176,6 +177,7 @@ def _run_single_trial(
             temperature=0.0,
             max_tokens=max_tokens,
             timeout_s=timeout_s,
+            extra_body=extra_body,
         )
         if not res["ok"]:
             error_kind = res["error_kind"] or "transport"
@@ -264,6 +266,7 @@ def _run_single_trial(
         "grader_version": grader_ver,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "model": model,
+        "reasoning_effort": (extra_body or {}).get("reasoning_effort"),
         "item_id": item["id"],
         "axis": item["axis"],
         "cat": item["cat"],
@@ -303,6 +306,7 @@ def run_benchmark(
     max_tokens: int = 8192,
     cats: Optional[List[str]] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> str:
     suite = generate_suite(seed=seed, profile=profile)
     if cats:
@@ -340,6 +344,7 @@ def run_benchmark(
                     api_key=api_key,
                     timeout_s=timeout_s,
                     max_tokens=max_tokens,
+                    extra_body=({"reasoning_effort": reasoning_effort} if reasoning_effort else None),
                 ): (m, it["id"], rep)
                 for m, it, rep in jobs
             }

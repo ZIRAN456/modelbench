@@ -1050,7 +1050,7 @@ def _pair_audit_trap_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "grader": item["grader"],
             "variant_group": group,
             "variant": "consistent",
-            "float_tol": item.get("float_tol"),
+            **({"float_tol": item["float_tol"]} if item.get("float_tol") is not None else {}),
             "forbid_fences": True,
             "forbid_prose": True,
             "prompt": sib_prompt,

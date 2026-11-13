@@ -18,6 +18,17 @@ class GraderError(Exception):
     """Raised when the grader itself malfunctions rather than the candidate model."""
 
 
+def _tol_of(item: Dict[str, Any], default: float = 1e-3) -> float:
+    """Tolerant lookup for float_tol: a missing OR explicit None key means default."""
+    value = item.get("float_tol")
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def grader_fingerprint() -> str:
     """Stable hash across grader, sandbox, and benchmark suite definitions."""
     import os
@@ -143,14 +154,14 @@ def _grade_json_exact(item: Dict[str, Any], content: str, *, strict_keys: bool =
             if isinstance(got_v, bool) or not isinstance(got_v, (int, float)):
                 # Allow numeric string? Strict schema requires number.
                 return 0, f"type_mismatch:{k}={got_v!r}"
-            tol = float(item.get("float_tol", 1e-3))
+            tol = _tol_of(item)
             if abs(float(got_v) - float(exp_v)) > tol:
                 return 0, f"num_mismatch:{k}={got_v}!={exp_v}"
         elif isinstance(exp_v, list):
             if not isinstance(got_v, list):
                 return 0, f"list_type_mismatch:{k}"
             if any(isinstance(x, (dict, list)) for x in exp_v):
-                ok_l, msg_l = _deep_match(got_v, exp_v, tol=float(item.get("float_tol", 1e-3)))
+                ok_l, msg_l = _deep_match(got_v, exp_v, tol=_tol_of(item))
                 if not ok_l:
                     return 0, f"list_mismatch:{k}:{msg_l}"
             elif item.get("unordered_lists"):
@@ -160,7 +171,7 @@ def _grade_json_exact(item: Dict[str, Any], content: str, *, strict_keys: bool =
                 if [_norm_str(x) for x in got_v] != [_norm_str(x) for x in exp_v]:
                     return 0, f"list_mismatch:{k}={got_v}!={exp_v}"
         elif isinstance(exp_v, dict):
-            ok_d, msg_d = _deep_match(got_v, exp_v, tol=float(item.get("float_tol", 1e-3)))
+            ok_d, msg_d = _deep_match(got_v, exp_v, tol=_tol_of(item))
             if not ok_d:
                 return 0, f"dict_mismatch:{k}:{msg_d}"
         else:
@@ -313,7 +324,7 @@ def _grade_tool_exec(item: Dict[str, Any], content: str, trace: Optional[Dict[st
     fs_exp = item.get("expected_fs") or {}
     if fs_exp:
         final_files = ((trace.get("final_fs") or {}).get("files") or {})
-        tol = float(item.get("float_tol", 1e-3))
+        tol = _tol_of(item)
         for fpath, kv in fs_exp.items():
             fobj = final_files.get(fpath) or {}
             for k, v in kv.items():

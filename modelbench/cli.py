@@ -67,6 +67,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_tokens=args.max_tokens,
         cats=cats,
         progress_cb=lambda msg: print(msg, flush=True),
+        reasoning_effort=args.reasoning_effort,
     )
     print(f"\nCompleted run_id={run_id}\n")
     print(format_report(args.out, batch=run_id))
@@ -116,6 +117,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     pr.add_argument("--workers", type=int, default=4)
     pr.add_argument("--timeout", type=float, default=120.0)
     pr.add_argument("--max-tokens", type=int, default=8192)
+    pr.add_argument("--reasoning-effort", choices=["low", "medium", "high", "max"], default=None,
+                    help="Optional reasoning_effort passed in the request body (model/runtime must support it)")
     pr.add_argument("--skip-selftest", action="store_true")
 
     prep = sub.add_parser("report", help="Render leaderboard from JSONL file")

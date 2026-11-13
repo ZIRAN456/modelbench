@@ -105,6 +105,7 @@ def chat_completion(
     max_tokens: int = 4096,
     timeout_s: float = 120.0,
     max_retries: int = 2,
+    extra_body: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Call OpenAI-compatible /chat/completions via streaming SSE with clean per-attempt timing."""
     url = resolve_endpoint(base_url)
@@ -121,6 +122,8 @@ def chat_completion(
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
+    if extra_body:
+        body.update(extra_body)
 
     raw_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json"}
