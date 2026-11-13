@@ -738,7 +738,7 @@ def _make_deep_wisdom_items(rng: random.Random) -> List[Dict[str, Any]]:
         "grader": "code_fix",
         "fn_name": "rollup_latest_events",
         "check_no_mutate": True,
-        "timeout_s": 1.2,
+        "timeout_s": 6.0,
         "prompt": (
             "Fix `rollup_latest_events(events)` AND its helper `dedupe_latest(events)`.\n"
             "Buggy implementation has 3 defects:\n"

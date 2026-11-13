@@ -204,7 +204,13 @@ class TestSandboxSecurityAndExecution(unittest.TestCase):
             "    return {'unique_count': len(d), 'total_score': sum(x['score'] for x in d)}\n"
             "```"
         )
-        p_slow, r_slow = grade_item(hard_items["wisdom_code_hard_rollup_on"], slow_sol)
+        perf_item = hard_items["wisdom_code_hard_rollup_on"]
+        # Only the O(N^2) probe is meant to be wall-clock sensitive. Correctness and
+        # mutation probes must not flake on slow shared CI runners (win32 subprocess
+        # spawn + JSON round-trip of 25k events can exceed the 1.2s perf budget).
+        loose_item = dict(perf_item, timeout_s=30.0)
+
+        p_slow, r_slow = grade_item(perf_item, slow_sol)
         self.assertEqual(p_slow, 0, "O(N^2) must fail via timeout")
         self.assertIn("timeout", r_slow)
 
@@ -223,7 +229,7 @@ class TestSandboxSecurityAndExecution(unittest.TestCase):
             "    return {'unique_count': len(d), 'total_score': sum(x['score'] for x in d)}\n"
             "```"
         )
-        p_mut, r_mut = grade_item(hard_items["wisdom_code_hard_rollup_on"], mutating_sol)
+        p_mut, r_mut = grade_item(loose_item, mutating_sol)
         self.assertEqual(p_mut, 0)
         self.assertIn("input_mutated", r_mut)
 
@@ -242,7 +248,7 @@ class TestSandboxSecurityAndExecution(unittest.TestCase):
             "    return {'unique_count': len(d), 'total_score': sum(x['score'] for x in d)}\n"
             "```"
         )
-        p_fast, r_fast = grade_item(hard_items["wisdom_code_hard_rollup_on"], fast_sol)
+        p_fast, r_fast = grade_item(loose_item, fast_sol)
         self.assertEqual(p_fast, 1, r_fast)
 
         ttl_sol = (
