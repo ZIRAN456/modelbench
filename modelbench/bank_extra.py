@@ -574,7 +574,8 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
     # -------------------------------------------------------------
     chain_prompt_lead = (
         "Diagnose the root cause of the incident from distributed logs and metrics.\n"
-        "Allowed root_cause_code values strictly from: [\"UPSTREAM_POOL_EXHAUSTED\", \"GATEWAY_JWT_LOCK_CONTENTION\", \"NETWORK_PACKET_LOSS\", \"HOST_CLOCK_SKEW\"].\n"
+        "Terminology: 'downstream' means a service WE call (gateway -> order-service -> DB).\n"
+        "Allowed root_cause_code values strictly from: [\"DOWNSTREAM_DEP_POOL_EXHAUSTED\", \"GATEWAY_JWT_LOCK_CONTENTION\", \"NETWORK_PACKET_LOSS\", \"HOST_CLOCK_SKEW\"].\n"
         "Output ONLY JSON (no fences): {\"root_cause_code\": \"<str>\", \"culprit_service\": \"<str>\"}"
     )
 
@@ -597,7 +598,7 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
             "[15:00:05.018] [api-gateway] ERROR worker-pool stack: thread_22 parked in socket_read_wait(fd=48) elapsed=5006ms\n"
             "[15:00:05.020] [api-gateway] ERROR HTTP 504 Gateway Timeout on /api/orders\n"
         ),
-        "expected": {"root_cause_code": "UPSTREAM_POOL_EXHAUSTED", "culprit_service": "order-service"},
+        "expected": {"root_cause_code": "DOWNSTREAM_DEP_POOL_EXHAUSTED", "culprit_service": "order-service"},
     })
 
     # Variant B: Gateway JWT Lock Contention (Downstream responds in 12ms, Gateway worker blocked in rwlock)

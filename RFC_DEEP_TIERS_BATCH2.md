@@ -28,7 +28,7 @@
 ### 题目二【智慧轴·因果链诊断】：`wisdom_chain_distributed_shadow`
 - **考核目标**：分布式链路真假超时穿透。
 - **2×2 变体矩阵**：
-  - **变体 00（下游真慢，线程耗尽）**：下游 DB 锁导致 upstream trace > 5000ms，网关 504，网关 worker 堆栈显示处于 `socket_read_wait`，元凶为 `UPSTREAM_POOL_EXHAUSTED`；
+  - **变体 00（下游真慢，线程耗尽）**：下游 DB 锁导致 upstream trace > 5000ms，网关 504，网关 worker 堆栈显示处于 `socket_read_wait`，元凶为 `DOWNSTREAM_DEP_POOL_EXHAUSTED`；
   - **变体 01（下游假超时，网关自身慢锁）**：下游 12ms 快速返回 ACK，网关 worker 堆栈卡在 `gateway.auth.jwt_rwlock_acquire` 耗时 5100ms，元凶为 `GATEWAY_JWT_LOCK_CONTENTION`；
   - **变体 10（网络中间件丢包重传）**：下游与网关均健康，TCP 重传率 40%，元凶为 `NETWORK_PACKET_LOSS`；
   - **变体 11（时钟漂移假象）**：两台主机 NTP 漂移 -6000ms，实际耗时仅 15ms，元凶为 `HOST_CLOCK_SKEW`。

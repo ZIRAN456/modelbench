@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.2.4 — 2026-11-13
+
+### Terminology fix (last open Hark note)
+- `UPSTREAM_POOL_EXHAUSTED` was self-contradictory: the exhausted pool belongs to a
+  service the gateway *calls*, i.e. downstream. Renamed to
+  **`DOWNSTREAM_DEP_POOL_EXHAUSTED`**, and the prompt now defines the direction
+  explicitly ("downstream = a service WE call: gateway -> order-service -> DB").
+  The closed enum plus the explicit `culprit_service` field removes the
+  upstream/downstream ambiguity Hark flagged.
+
 ## v2.2.3 — 2026-11-13
 
 Prompt-only fix found by the first real-model run of the new variants.

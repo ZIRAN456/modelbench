@@ -841,7 +841,7 @@ class TestDeepBatch2Suite(unittest.TestCase):
         net_item = self.items["wisdom_chain_distributed_shadow_network"]
         clk_item = self.items["wisdom_chain_distributed_shadow_clock"]
 
-        sol_up = json.dumps({"root_cause_code": "UPSTREAM_POOL_EXHAUSTED", "culprit_service": "order-service"})
+        sol_up = json.dumps({"root_cause_code": "DOWNSTREAM_DEP_POOL_EXHAUSTED", "culprit_service": "order-service"})
         sol_gw = json.dumps({"root_cause_code": "GATEWAY_JWT_LOCK_CONTENTION", "culprit_service": "api-gateway"})
         sol_net = json.dumps({"root_cause_code": "NETWORK_PACKET_LOSS", "culprit_service": "vpc-nat-gateway"})
         sol_clk = json.dumps({"root_cause_code": "HOST_CLOCK_SKEW", "culprit_service": "ntp-time-sync"})
