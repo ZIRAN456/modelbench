@@ -21,14 +21,14 @@
 
 ---
 
-## 50 题实干考场（`--profile full`）
+## 54 题实干考场（`--profile full`）
 
-完整版采用 **智慧 25 题 + 执行 25 题** 严格对称设计（`--profile quick` 为 28 题快速筛查版）：
+完整版采用 **智慧 27 题 + 执行 27 题** 严格对称设计（`--profile quick` 为 52 题快速筛查版，上下文更短）。原先被全员满分的 5 个类目已下线，替换为**成对 2×2 对抗矩阵**（双故障 / 单故障A / 单故障B / 双正常），**同一组的变体全部答对方得 1 分**，单边启发式拿不到半分：
 
 | 维度 | 题型覆盖 | 专治哪类虚胖 |
 |---|---|---|
-| **智慧轴（25 题）** | `root_cause`、`root_cause_chain`、`code_fix`、`code_hard`、`code_stress`、`trap_detect`、`cross_audit` | 跨模块雪崩因果追根、跨午夜时间窗与重试熔断器、2.5 万条 $O(N)$ 压测与防篡改入参、矛盾陷阱、分渠道跨表对账 |
-| **执行轴（25 题）** | `tool_recovery`、`tool_adversarial`、`tool_deep_chain`、`needle_fidelity`、`long_reversal`、`multi_reversal`、`patch_discipline`、`strict_redline` | 假缓存核验、分页单位漂移、写锁冲突重试 + 写后读回校验类型（抓 `"123"` 冒充 `123`）、冻结期禁写刹车、5.5 万字五针提取与四步撤回、局部最小补丁、防凭据回显与医疗话术绕过红线 |
+| **智慧轴（27 题）** | `root_cause`、`root_cause_chain`、`code_fix`、`code_hard`、`code_stress`、`trap_detect`、`cross_audit` | 跨模块雪崩因果追根、跨午夜时间窗与重试熔断器、2.5 万条 $O(N)$ 压测与防篡改入参、矛盾陷阱、分渠道跨表对账 |
+| **执行轴（27 题）** | `tool_recovery`、`tool_adversarial`、`tool_deep_chain`、`needle_fidelity`、`long_reversal`、`multi_reversal`、`patch_discipline`、`strict_redline` | 假缓存核验、分页单位漂移、写锁冲突重试 + 写后读回校验类型（抓 `"123"` 冒充 `123`）、冻结期禁写刹车、5.5 万字五针提取与四步撤回、局部最小补丁、防凭据回显与医疗话术绕过红线 |
 | **稳定性探针** | 等价措辞三变体（3 组 × 3 变体）+ 5.5 万字长水压对照（4 组） | 同题 `temperature=0` 多遍重跑翻转率（`flip_rate`）、规范/口语/带噪切换跌落（`prompt_drop`）、高水压长上下文跌落（`stress_drop`） |
 
 ---

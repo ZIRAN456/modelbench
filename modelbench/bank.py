@@ -664,56 +664,10 @@ def _make_redline_items(rng: random.Random) -> List[Dict[str, Any]]:
 
 
 def _make_deep_wisdom_items(rng: random.Random) -> List[Dict[str, Any]]:
-    """Deep-tier wisdom tasks: multi-hop causal chain logs + coupled code with O(N) & immutability traps."""
-    bad_rev = rng.randrange(850, 990)
-    stale_rev = bad_rev - 1
-    bad_port = 17900 + rng.randrange(10, 90)
-    ok_port = 18100 + rng.randrange(10, 90)
-
-    noise_a = make_heterogeneous_logs(rng, 900, turn_prefix="CHAIN")
-    noise_b = make_heterogeneous_logs(rng, 900, turn_prefix="CHAIN")
-    log_lines = (
-        noise_a[:4]
-        + [f"[14:02:10.100] [cache-sync] WARN transient cache miss on key=session_idx, auto-recovered in 11ms (resolved=true)"]
-        + noise_a[4:]
-        + [f"[14:02:11.102] [config-loader] WARN hot_reload cfg_rev={bad_rev} checksum mismatch -> rolled back to stale_rev={stale_rev} (upstream_port={bad_port}, expected_port={ok_port})"]
-        + noise_b[:5]
-        + [f"[14:02:11.450] [worker-pool] ERROR connecting upstream via port={bad_port} -> ECONNREFUSED, retrying 30s"]
-        + noise_b[5:]
-        + ["[14:02:41.455] [gateway] ERROR TimeoutError waiting for downstream worker-pool after 30.0s"]
-    )
-    chain_log = "\n".join(log_lines)
-    allowed = ["HOT_RELOAD_ROLLBACK_STALE_PORT", "CACHE_TRANSIENT_MISS", "DOWNSTREAM_TIMEOUT", "DNS_NXDOMAIN"]
-    contract = (
-        f"\nAllowed root_cause_code values: {allowed}.\n"
-        "Do NOT pick symptoms (TimeoutError) or already-recovered warnings (resolved=true).\n"
-        'Output ONLY JSON (no fences): {"root_cause_code": "<code >", "failed_rev": <int>, "broken_port": <int>}'
-    )
-
+    """Deep-tier wisdom tasks: coupled code with O(N) & immutability traps."""
     items: List[Dict[str, Any]] = []
-    for vname, lead in [
-        ("spec", "Trace the cross-module causal chain in the log below to identify the true triggering root cause."),
-        ("colloquial", "网关报了 30 秒 TimeoutError，前面还有个缓存 miss 的警告。你帮我顺着时间线查到底哪一步才是真正把后面拖垮的罪魁祸首。"),
-        ("noisy", f"刚才群里老王还在问机房温度 {rng.randrange(22,28)} 度正不正常，那个别管。先帮我看下这段跨模块报错日志，到底最初是谁引发的雪崩："),
-    ]:
-        items.append({
-            "id": f"wisdom_chain_{vname}",
-            "axis": "wisdom",
-            "cat": "root_cause_chain",
-            "grader": "json_exact",
-            "variant_group": "ps_chain",
-            "variant": vname,
-            "forbid_fences": True,
-            "forbid_prose": True,
-            "prompt": f"{lead}\n\n{chain_log}\n{contract}",
-            "expected": {
-                "root_cause_code": "HOT_RELOAD_ROLLBACK_STALE_PORT",
-                "failed_rev": bad_rev,
-                "broken_port": bad_port,
-            },
-        })
 
-    # Hard Code 1: Coupled dedupe + immutability + O(N) performance stress (N=25000, timeout 1.2s)
+    # Hard Code 1: Coupled dedupe + immutability + O(N) performance stress (N=25000, timeout 6.0s)
     n_perf = 25000
     perf_events = [
         {"id": f"ev_{i % 15000}", "ts": (i * 7) % 100000, "score": (i % 9) + 1, "tags": ["raw"]}
@@ -1070,8 +1024,8 @@ def generate_suite(*, seed: int = 20261112, profile: str = "quick") -> List[Dict
     items.extend(_make_deep_wisdom_items(rng))
     items.extend(make_extra_wisdom_items(rng, full, make_heterogeneous_logs))
     items.extend(_make_tool_recovery_items(rng))
-    items.extend(_make_long_reversal_items(rng, full=full))
     items.extend(_make_deep_exec_items(rng, full=full))
     items.extend(make_extra_exec_items(rng, full, make_heterogeneous_logs, _MOCK_TOOLS_SPEC))
+    items.extend(make_batch2_deep_items(rng, full=full, tools_spec=_MOCK_TOOLS_SPEC))
     items.extend(_make_redline_items(rng))
     return items

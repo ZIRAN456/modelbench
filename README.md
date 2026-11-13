@@ -21,9 +21,9 @@
 
 ---
 
-## 50-Item Practical Suite (`--profile full`)
+## 54-Item Practical Suite (`--profile full`)
 
-Symmetric **25 Wisdom + 25 Execution** items (`--profile quick` runs a fast 28-item subset):
+Symmetric **27 Wisdom + 27 Execution** items (`--profile quick` runs a faster 52-item subset with shorter contexts). Five categories that every model used to ace are now replaced by paired **2x2 adversarial matrices** (double-fault / single-fault A / single-fault B / clean) scored all-or-nothing:
 
 | Axis | Categories | What It Catches |
 |---|---|---|
