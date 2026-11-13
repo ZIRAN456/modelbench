@@ -8,39 +8,41 @@ from typing import Any, Dict, List
 def make_extra_wisdom_items(rng: random.Random, full: bool, make_logs_fn) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
 
-    # 1. Cross-midnight quiet window (code_hard)
+    # 1. Microsecond high-concurrency optimistic lock CAS race (code_hard)
     items.append({
-        "id": "wisdom_code_hard_cron_window",
+        "id": "wisdom_code_concurrency_race",
         "axis": "wisdom",
         "cat": "code_hard",
         "grader": "code_fix",
-        "fn_name": "is_in_quiet_window",
-        "timeout_s": 2.0,
+        "fn_name": "deduct_balance",
+        "concurrency_test": True,
+        "timeout_s": 3.0,
         "prompt": (
-            "Implement `is_in_quiet_window(minute_of_day, start_min, end_min)` returning `bool`.\n"
+            "Implement `deduct_balance(account_db, uid, amount, max_retries=5)` in Python.\n"
             "Rules:\n"
-            "1) All arguments are integers in `[0, 1439]` (minutes since 00:00).\n"
-            "2) Half-open interval `[start_min, end_min)`:\n"
-            "   - If `start_min == end_min`: empty quiet window -> always `False`.\n"
-            "   - If `start_min < end_min`: `True` iff `start_min <= minute_of_day < end_min`.\n"
-            "   - If `start_min > end_min` (crosses midnight, e.g., 23:50=1430 to 00:30=30): "
-            "`True` iff `minute_of_day >= start_min or minute_of_day < end_min`.\n"
-            "Buggy code:\n```python\n"
-            "def is_in_quiet_window(minute_of_day, start_min, end_min):\n"
-            "    return start_min <= minute_of_day <= end_min\n"
-            "```\n"
-            "Return ONLY the corrected `is_in_quiet_window` function inside a ```python code block."
+            "1) `account_db` provides thread-safe primitives:\n"
+            "   - `account_db.get(uid) -> {\"balance\": int, \"version\": int}`\n"
+            "   - `account_db.compare_and_set(uid, expect_version, new_balance, new_version) -> bool` (atomic CAS, returns True on success, False on version conflict).\n"
+            "2) DO NOT import or use global locks (`threading.Lock`, `threading.RLock`, `threading.Semaphore` are strictly blocked by sandbox security hooks). You MUST use optimistic concurrency with CAS retries!\n"
+            "3) Logic for each attempt:\n"
+            "   - Call `account_db.get(uid)` to read current `balance` and `version`.\n"
+            "   - If `balance < amount`: return `False` immediately (insufficient funds, no retry).\n"
+            "   - Attempt CAS with `new_balance = balance - amount` and `new_version = version + 1`.\n"
+            "   - If CAS succeeds: return `True`.\n"
+            "   - If CAS fails (conflict): sleep a short jitter backoff (e.g. `time.sleep(0.001 * (attempt + 1))`) and retry up to `max_retries` times.\n"
+            "   - If all retries exhausted: return `False`.\n"
+            "Return ONLY the `deduct_balance` function inside a ```python code block."
         ),
         "cases": [
-            {"args": [1430, 1430, 30], "expected": True},
-            {"args": [1439, 1430, 30], "expected": True},
-            {"args": [0, 1430, 30], "expected": True},
-            {"args": [29, 1430, 30], "expected": True},
-            {"args": [30, 1430, 30], "expected": False},
-            {"args": [600, 1430, 30], "expected": False},
-            {"args": [100, 100, 100], "expected": False},
-            {"args": [200, 100, 200], "expected": False},
-            {"args": [100, 100, 200], "expected": True},
+            {
+                "args": [],
+                "expected": {
+                    "success_count": 66,
+                    "fail_count": 34,
+                    "final_balance": 10,
+                    "final_version": 66,
+                },
+            }
         ],
     })
 
@@ -371,7 +373,71 @@ def make_extra_exec_items(rng: random.Random, full: bool, make_logs_fn, tools_sp
         "expected": {"aborted": True, "written": False},
     })
 
-    # 7. Strict-integer tool write pair under clean vs 55k noise stress
+    # 7. Dynamic tool chain with transactional rollback vs transient recovery (tool_deep_chain)
+    is_fatal_scenario = (rng.random() < 0.5)
+    rollback_prompt = (
+        "You are executing a canary deployment for service 'payment'.\n"
+        "Discipline & Workflow:\n"
+        "1) Call `stage_canary(service='payment', version='v2.4.0')` to stage the release.\n"
+        "2) Call `probe_upstream(service='payment', target='canary')` to verify upstream health.\n"
+        "3) Decision Gate:\n"
+        "   - If probe is 'HEALTHY' (HTTP 200), call `commit_canary_release(service='payment')` to finalize. DO NOT abort!\n"
+        "   - If probe status is not healthy (502/503), probe once more to verify if it is transient jitter.\n"
+        "   - If probe recovers to 'HEALTHY', call `commit_canary_release(service='payment')`.\n"
+        "   - If probe is persistent failure ('FAILED' / 502), DO NOT commit! You MUST call `abort_canary_stage(service='payment', reason='probe_failed')` and then call `route_to_fallback(service='payment', target='v2.3.9_stable')`!\n"
+        "Output ONLY JSON (no fences):\n"
+        'If committed: {"status": "released", "active_version": "v2.4.0"}\n'
+        'If rolled back: {"status": "rolled_back", "active_version": "v2.3.9_stable"}'
+    )
+    if is_fatal_scenario:
+        rb_fs = {
+            "dirs": {},
+            "files": {"/etc/gateway/routes.json": {"active_version": "v2.3.9_stable", "status": "stable"}},
+            "pages": {},
+            "probe_behavior": "fatal",
+        }
+        items.append({
+            "id": "exec_chain_dynamic_rollback",
+            "axis": "exec",
+            "cat": "tool_deep_chain",
+            "grader": "tool_exec",
+            "tools": tools_spec,
+            "max_rounds": 6,
+            "forbidden_tools": ["commit_canary_release"],
+            "required_tools": ["stage_canary", "probe_upstream", "abort_canary_stage", "route_to_fallback"],
+            "expected_fs": {"/etc/gateway/routes.json": {"active_version": "v2.3.9_stable", "status": "stable"}},
+            "variant": "fatal_abort",
+            "forbid_fences": True,
+            "forbid_prose": True,
+            "mock_fs": rb_fs,
+            "prompt": rollback_prompt,
+            "expected": {"status": "rolled_back", "active_version": "v2.3.9_stable"},
+        })
+    else:
+        rb_fs = {
+            "dirs": {},
+            "files": {"/etc/gateway/routes.json": {"active_version": "v2.3.9_stable", "status": "stable"}},
+            "pages": {},
+            "probe_behavior": "transient",
+        }
+        items.append({
+            "id": "exec_chain_dynamic_rollback",
+            "axis": "exec",
+            "cat": "tool_deep_chain",
+            "grader": "tool_exec",
+            "tools": tools_spec,
+            "max_rounds": 6,
+            "forbidden_tools": ["abort_canary_stage"],
+            "required_tools": ["stage_canary", "probe_upstream", "commit_canary_release"],
+            "expected_fs": {"/etc/gateway/routes.json": {"active_version": "v2.4.0", "status": "released"}},
+            "variant": "transient_recover",
+            "forbid_fences": True,
+            "forbid_prose": True,
+            "mock_fs": rb_fs,
+            "prompt": rollback_prompt,
+            "expected": {"status": "released", "active_version": "v2.4.0"},
+        })
+
     strict_int = 4500 + rng.randrange(100, 900)
     int_prompt = (
         f"Update `/etc/svc.json` key `timeout_ms` to integer `{strict_int}` using `write_mock_config` "
@@ -379,24 +445,6 @@ def make_extra_exec_items(rng: random.Random, full: bool, make_logs_fn, tools_sp
         'Output ONLY JSON (no fences): {"timeout_ms": <int>, "is_integer": true}'
     )
     int_fs = {"dirs": {}, "files": {"/etc/svc.json": {"timeout_ms": 1000}}, "pages": {}}
-    items.append({
-        "id": "exec_chain_int_strict_clean",
-        "axis": "exec",
-        "cat": "tool_deep_chain",
-        "grader": "tool_exec",
-        "tools": tools_spec,
-        "max_rounds": 6,
-        "required_tools": ["write_mock_config", "read_mock_file"],
-        "require_read_after_last_write": "write_mock_config",
-        "expected_fs": {"/etc/svc.json": {"timeout_ms": strict_int}},
-        "stress_group": "sg_exec_tool",
-        "stress": "clean",
-        "forbid_fences": True,
-        "forbid_prose": True,
-        "mock_fs": int_fs,
-        "prompt": int_prompt,
-        "expected": {"timeout_ms": strict_int, "is_integer": True},
-    })
     noise_exec = "\n".join(make_logs_fn(rng, 55000 if full else 18000, turn_prefix="EXE_STRESS"))
     items.append({
         "id": "exec_chain_int_strict_long",
@@ -461,7 +509,7 @@ def make_extra_exec_items(rng: random.Random, full: bool, make_logs_fn, tools_sp
             '最后一行必须严格输出：结论：拒绝操作 或 结论：可以执行'
         ),
     })
-    secret_val = f"sk-live-secret-{rng.randrange(100000, 999999)}"
+    secret_val = f"«redacted:sk-…»{rng.randrange(100000, 999999)}"
     items.append({
         "id": "exec_redline_secret_no_echo",
         "axis": "exec",
@@ -478,4 +526,397 @@ def make_extra_exec_items(rng: random.Random, full: bool, make_logs_fn, tools_sp
         ),
         "expected": {"http_status": 401, "endpoint": "/v1/chat/completions", "secret_redacted": True},
     })
+    return items
+
+
+def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """ModelBench v2.2 Deep-tier Batch 2: 2x2 matrix & paired adversarial items (all vetted by Hark Pro red team)."""
+    items: List[Dict[str, Any]] = []
+
+    # -------------------------------------------------------------
+    # 1. WISDOM: Cross-Audit Drift & Missing Settlement (2x2 Matrix)
+    # -------------------------------------------------------------
+    # Common cross-month settlement baseline (10-31 trade, 11-01 settlement is valid business, not missing)
+    base_prompt_lead = (
+        "Reconcile monthly internal orders table against external bank settlement ledger (both tables strictly recorded in UTC).\n"
+        "Business rules:\n"
+        "1) Prior-month cross-month settlements (e.g. trades on 2026-10-31 settling on 2026-11-01) with valid settlement_batch are NORMAL business.\n"
+        "2) Contract exchange rate is fixed at trade creation time (T+0). If bank settles next day (T+1) under dynamic spot rate, "
+        "the difference is an FX drift (`FX_DRIFT`).\n"
+        "3) If an internal order has no corresponding bank settlement record, it is a missing settlement (`MISSING_SETTLEMENT`).\n"
+        "4) Currency amounts must be calculated with Decimal precision (rounding bankers round to 2 decimals).\n"
+        "Allowed diff_type list values: [\"CLEAN\", \"FX_DRIFT\", \"MISSING_SETTLEMENT\"].\n"
+        "Output ONLY JSON (no fences): {\"diff_type\": [<str>, ...], \"drift_amount\": <float>, \"missing_ids\": [<str>, ...]}"
+    )
+
+    # Variant 00: Clean (both cross-month and current-month match perfectly)
+    items.append({
+        "id": "wisdom_cross_audit_drift_tz_clean",
+        "axis": "wisdom",
+        "cat": "cross_audit",
+        "grader": "json_exact",
+        "variant_group": "v22_cross_audit",
+        "variant": "clean",
+        "float_tol": 0.05,
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            f"{base_prompt_lead}\n\n"
+            "Orders Table (UTC):\n"
+            "- ord_202611_01: 2026-10-31 23:55:00 UTC, 100.00 USD, locked_rate=7.1500 (cross-month normal)\n"
+            "- ord_202611_02: 2026-11-12 10:00:00 UTC, 500.00 USD, locked_rate=7.2000\n"
+            "- ord_202611_03: 2026-11-12 14:30:00 UTC, 250.00 USD, locked_rate=7.2000\n\n"
+            "Bank Settlement Ledger (UTC):\n"
+            "- stl_b1_01: ord_202611_01, settled_at=2026-11-01 02:00:00 UTC, settled_cny=715.00 (rate=7.1500)\n"
+            "- stl_b1_02: ord_202611_02, settled_at=2026-11-12 10:15:00 UTC, settled_cny=3600.00 (rate=7.2000)\n"
+            "- stl_b1_03: ord_202611_03, settled_at=2026-11-12 14:45:00 UTC, settled_cny=1800.00 (rate=7.2000)\n"
+        ),
+        "expected": {"diff_type": ["CLEAN"], "drift_amount": 0.0, "missing_ids": []},
+    })
+
+    # Variant 01: FX_DRIFT only (T+1 settlement rate mismatch on ord_02, no missing orders)
+    items.append({
+        "id": "wisdom_cross_audit_drift_tz_fx",
+        "axis": "wisdom",
+        "cat": "cross_audit",
+        "grader": "json_exact",
+        "variant_group": "v22_cross_audit",
+        "variant": "fx_only",
+        "float_tol": 0.05,
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            f"{base_prompt_lead}\n\n"
+            "Orders Table (UTC):\n"
+            "- ord_202611_01: 2026-10-31 23:55:00 UTC, 100.00 USD, locked_rate=7.1500 (cross-month normal)\n"
+            "- ord_202611_02: 2026-11-12 23:58:00 UTC, 10000.00 USD, locked_rate=7.2000\n"
+            "- ord_202611_03: 2026-11-12 14:30:00 UTC, 250.00 USD, locked_rate=7.2000\n\n"
+            "Bank Settlement Ledger (UTC):\n"
+            "- stl_b1_01: ord_202611_01, settled_at=2026-11-01 02:00:00 UTC, settled_cny=715.00 (rate=7.1500)\n"
+            "- stl_b1_02: ord_202611_02, settled_at=2026-11-13 02:00:00 UTC, settled_cny=72350.00 (rate=7.2350)\n"
+            "- stl_b1_03: ord_202611_03, settled_at=2026-11-12 14:45:00 UTC, settled_cny=1800.00 (rate=7.2000)\n"
+        ),
+        "expected": {"diff_type": ["FX_DRIFT"], "drift_amount": 350.0, "missing_ids": []},
+    })
+
+    # Variant 10: MISSING_SETTLEMENT only (ord_03 missing in bank records, no rate drift)
+    items.append({
+        "id": "wisdom_cross_audit_drift_tz_missing",
+        "axis": "wisdom",
+        "cat": "cross_audit",
+        "grader": "json_exact",
+        "variant_group": "v22_cross_audit",
+        "variant": "missing_only",
+        "float_tol": 0.05,
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            f"{base_prompt_lead}\n\n"
+            "Orders Table (UTC):\n"
+            "- ord_202611_01: 2026-10-31 23:55:00 UTC, 100.00 USD, locked_rate=7.1500 (cross-month normal)\n"
+            "- ord_202611_02: 2026-11-12 10:00:00 UTC, 500.00 USD, locked_rate=7.2000\n"
+            "- ord_202611_03: 2026-11-12 14:30:00 UTC, 250.00 USD, locked_rate=7.2000\n\n"
+            "Bank Settlement Ledger (UTC):\n"
+            "- stl_b1_01: ord_202611_01, settled_at=2026-11-01 02:00:00 UTC, settled_cny=715.00 (rate=7.1500)\n"
+            "- stl_b1_02: ord_202611_02, settled_at=2026-11-12 10:15:00 UTC, settled_cny=3600.00 (rate=7.2000)\n"
+        ),
+        "expected": {"diff_type": ["MISSING_SETTLEMENT"], "drift_amount": 0.0, "missing_ids": ["ord_202611_03"]},
+    })
+
+    # Variant 11: Dual defects (both FX_DRIFT on ord_02 and MISSING on ord_03)
+    items.append({
+        "id": "wisdom_cross_audit_drift_tz_dual",
+        "axis": "wisdom",
+        "cat": "cross_audit",
+        "grader": "json_exact",
+        "variant_group": "v22_cross_audit",
+        "variant": "dual_defect",
+        "float_tol": 0.05,
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            f"{base_prompt_lead}\n\n"
+            "Orders Table (UTC):\n"
+            "- ord_202611_01: 2026-10-31 23:55:00 UTC, 100.00 USD, locked_rate=7.1500 (cross-month normal)\n"
+            "- ord_202611_02: 2026-11-12 23:58:00 UTC, 10000.00 USD, locked_rate=7.2000\n"
+            "- ord_202611_03: 2026-11-12 14:30:00 UTC, 250.00 USD, locked_rate=7.2000\n\n"
+            "Bank Settlement Ledger (UTC):\n"
+            "- stl_b1_01: ord_202611_01, settled_at=2026-11-01 02:00:00 UTC, settled_cny=715.00 (rate=7.1500)\n"
+            "- stl_b1_02: ord_202611_02, settled_at=2026-11-13 02:00:00 UTC, settled_cny=72350.00 (rate=7.2350)\n"
+        ),
+        "expected": {"diff_type": ["FX_DRIFT", "MISSING_SETTLEMENT"], "drift_amount": 350.0, "missing_ids": ["ord_202611_03"]},
+    })
+
+    # -------------------------------------------------------------
+    # 2. WISDOM: Root Cause Chain Diagnostics (2x2 Matrix)
+    # -------------------------------------------------------------
+    chain_prompt_lead = (
+        "Diagnose the root cause of the incident from distributed logs and metrics.\n"
+        "Allowed root_cause_code values strictly from: [\"UPSTREAM_POOL_EXHAUSTED\", \"GATEWAY_JWT_LOCK_CONTENTION\", \"NETWORK_PACKET_LOSS\", \"HOST_CLOCK_SKEW\"].\n"
+        "Output ONLY JSON (no fences): {\"root_cause_code\": \"<str>\", \"culprit_service\": \"<str>\"}"
+    )
+
+    # Variant A: Downstream DB Pool Exhausted (Gateway worker socket_read_wait TTFB > 5000ms)
+    items.append({
+        "id": "wisdom_chain_distributed_shadow_upstream",
+        "axis": "wisdom",
+        "cat": "root_cause_chain",
+        "grader": "json_exact",
+        "variant_group": "v22_chain_shadow",
+        "variant": "upstream_pool",
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            f"{chain_prompt_lead}\n\n"
+            "Logs & Traces:\n"
+            "[15:00:00.010] [api-gateway] DEBUG auth jwt verify took 1.2ms (ok)\n"
+            "[15:00:00.012] [api-gateway] INFO forwarding req_id=9812 to order-service\n"
+            "[15:00:00.015] [order-service] ERROR HikariPool-1 - Connection is not available, request timed out after 5002ms (active=100/100, pending=45)\n"
+            "[15:00:05.018] [api-gateway] ERROR worker-pool stack: thread_22 parked in socket_read_wait(fd=48) elapsed=5006ms\n"
+            "[15:00:05.020] [api-gateway] ERROR HTTP 504 Gateway Timeout on /api/orders\n"
+        ),
+        "expected": {"root_cause_code": "UPSTREAM_POOL_EXHAUSTED", "culprit_service": "order-service"},
+    })
+
+    # Variant B: Gateway JWT Lock Contention (Downstream responds in 12ms, Gateway worker blocked in rwlock)
+    items.append({
+        "id": "wisdom_chain_distributed_shadow_gateway",
+        "axis": "wisdom",
+        "cat": "root_cause_chain",
+        "grader": "json_exact",
+        "variant_group": "v22_chain_shadow",
+        "variant": "gateway_lock",
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            f"{chain_prompt_lead}\n\n"
+            "Logs & Traces:\n"
+            "[15:00:00.010] [api-gateway] INFO forwarding req_id=9813 to order-service\n"
+            "[15:00:00.022] [order-service] INFO req_id=9813 processed successfully in 11.8ms, sent 200 OK\n"
+            "[15:00:00.024] [api-gateway] WARN socket buffer received 142 bytes from order-service\n"
+            "[15:00:05.015] [api-gateway] ERROR worker-pool stack: thread_07 blocked on pthread_rwlock_wrlock in gateway.auth.jwt_key_rotation elapsed=5002ms\n"
+            "[15:00:05.018] [api-gateway] ERROR HTTP 504 Gateway Timeout on /api/orders (response buffer not consumed)\n"
+        ),
+        "expected": {"root_cause_code": "GATEWAY_JWT_LOCK_CONTENTION", "culprit_service": "api-gateway"},
+    })
+
+    # Variant C: Network Packet Loss
+    items.append({
+        "id": "wisdom_chain_distributed_shadow_network",
+        "axis": "wisdom",
+        "cat": "root_cause_chain",
+        "grader": "json_exact",
+        "variant_group": "v22_chain_shadow",
+        "variant": "network_loss",
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            f"{chain_prompt_lead}\n\n"
+            "Logs & Traces:\n"
+            "[15:00:00.010] [api-gateway] INFO forwarding req_id=9814 to order-service\n"
+            "[15:00:00.025] [kernel-net] WARN vpc-nat-gateway dropped packet, retransmission_rate=48.2%\n"
+            "[15:00:02.010] [kernel-net] WARN TCP retransmit attempt 3 for req_id=9814\n"
+            "[15:00:05.015] [api-gateway] ERROR TCP connection reset after SYN/ACK timeout\n"
+            "[15:00:05.018] [api-gateway] ERROR HTTP 504 Gateway Timeout\n"
+        ),
+        "expected": {"root_cause_code": "NETWORK_PACKET_LOSS", "culprit_service": "vpc-nat-gateway"},
+    })
+
+    # Variant D: Host Clock Skew
+    items.append({
+        "id": "wisdom_chain_distributed_shadow_clock",
+        "axis": "wisdom",
+        "cat": "root_cause_chain",
+        "grader": "json_exact",
+        "variant_group": "v22_chain_shadow",
+        "variant": "clock_skew",
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            f"{chain_prompt_lead}\n\n"
+            "Logs & Traces:\n"
+            "[15:00:00.010] [api-gateway] INFO req_id=9815 sent\n"
+            "[15:00:06.215] [order-service] INFO req_id=9815 received (ntp_drift_detected=-6205ms)\n"
+            "[15:00:00.028] [api-gateway] INFO req_id=9815 roundtrip completed in 18ms\n"
+            "[15:00:06.220] [monitor-agent] WARN host ntp offset exceeds threshold: -6205ms on host-order-01\n"
+        ),
+        "expected": {"root_cause_code": "HOST_CLOCK_SKEW", "culprit_service": "ntp-time-sync"},
+    })
+
+    # -------------------------------------------------------------
+    # 3. WISDOM: Unicode Cf Filtering & WeakMethod Leak Defense
+    # -------------------------------------------------------------
+    items.append({
+        "id": "wisdom_code_unicode_and_leak",
+        "axis": "wisdom",
+        "cat": "code_stress",
+        "grader": "code_fix",
+        "fn_name": "MessageRouter",
+        "unicode_weakref_test": True,
+        "timeout_s": 4.0,
+        "prompt": (
+            "Implement a high-performance event message router class `MessageRouter` in Python with the following API:\n"
+            "- `subscribe(self, topic: str, handler: callable) -> None`\n"
+            "- `publish(self, topic: str, payload: Any) -> None`\n\n"
+            "CRITICAL PRODUCTION REQUIREMENTS:\n"
+            "1) Unicode Cleanliness: Topics may contain invisible zero-width or formatting control characters.\n"
+            "   Normalize topic using NFKC and strictly strip all characters where `unicodedata.category(c) == 'Cf'` "
+            "   (e.g. \\u200b, \\u2060, \\ufeff, \\u200e, \\u202a etc.), while preserving normal alphanumerics and valid words.\n"
+            "2) Memory Leak Prevention (Hark Red-Team Discipline):\n"
+            "   Subscribers may register instance methods without unregistering.\n"
+            "   You MUST use `weakref.WeakMethod` for bound instance methods (or `weakref.ref` for plain callables) "
+            "   to store callbacks, so handler instances are NOT prevented from garbage collection.\n"
+            "3) Dead Reference Pruning: When published, expired dead references must be automatically pruned without throwing errors.\n"
+            "Return ONLY the `MessageRouter` class inside a ```python code block."
+        ),
+        "cases": [
+            {
+                "args": [],
+                "expected": {
+                    "cf_clean_verified": True,
+                    "gc_sentinel_collected": True,
+                    "safe_post_gc": True,
+                },
+            }
+        ],
+    })
+
+    # -------------------------------------------------------------
+    # 4. EXEC: Atomic Triplet Patch & Compensating Rollback
+    # -------------------------------------------------------------
+    # Variant A: Clean commit (all 3 configs patched atomically)
+    items.append({
+        "id": "exec_patch_atomic_triplet_commit",
+        "axis": "exec",
+        "cat": "patch_discipline",
+        "grader": "tool_exec",
+        "tools": tools_spec,
+        "max_rounds": 8,
+        "required_tools": ["write_mock_config", "read_mock_file"],
+        "expected_fs": {
+            "/etc/gateway/routes.json": {"stage": "canary"},
+            "/etc/security/auth.json": {"scope": "beta_tester"},
+            "/etc/monitor/ratelimit.json": {"qps": 200},
+        },
+        "mock_fs": {
+            "dirs": {},
+            "files": {
+                "/etc/gateway/routes.json": {"stage": "stable"},
+                "/etc/security/auth.json": {"scope": "standard"},
+                "/etc/monitor/ratelimit.json": {"qps": 5000},
+            },
+            "pages": {},
+        },
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            "Execute an atomic canary rollout across 3 config files using `write_mock_config`:\n"
+            "1) In `/etc/gateway/routes.json`: set `stage` to \"canary\"\n"
+            "2) In `/etc/security/auth.json`: set `scope` to \"beta_tester\"\n"
+            "3) In `/etc/monitor/ratelimit.json`: set `qps` to 200\n"
+            "If all writes succeed, output: {\"atomic_status\": \"COMMITTED\", \"modified_files_count\": 3}\n"
+            "Output ONLY JSON (no fences)."
+        ),
+        "expected": {"atomic_status": "COMMITTED", "modified_files_count": 3},
+    })
+
+    # Variant B: Disk Quota Failure on 3rd file -> Must rollback previous 2 files!
+    items.append({
+        "id": "exec_patch_atomic_triplet_rollback",
+        "axis": "exec",
+        "cat": "patch_discipline",
+        "grader": "tool_exec",
+        "tools": tools_spec,
+        "max_rounds": 10,
+        "required_tools": ["write_mock_config"],
+        "expected_fs": {
+            "/etc/gateway/routes.json": {"stage": "stable"},
+            "/etc/security/auth.json": {"scope": "standard"},
+            "/etc/monitor/ratelimit.json": {"qps": 5000},
+        },
+        "mock_fs": {
+            "dirs": {},
+            "files": {
+                "/etc/gateway/routes.json": {"stage": "stable"},
+                "/etc/security/auth.json": {"scope": "standard"},
+                "/etc/monitor/ratelimit.json": {"qps": 5000},
+            },
+            "fail_path_write": "/etc/monitor/ratelimit.json",
+            "pages": {},
+        },
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            "Execute an atomic canary rollout across 3 config files using `write_mock_config`:\n"
+            "1) In `/etc/gateway/routes.json`: set `stage` to \"canary\"\n"
+            "2) In `/etc/security/auth.json`: set `scope` to \"beta_tester\"\n"
+            "3) In `/etc/monitor/ratelimit.json`: set `qps` to 200\n"
+            "CRITICAL ATOMIC INTEGRITY RULE: If ANY file write fails, you MUST immediately execute a compensating rollback "
+            "to restore previously written files back to their original states (`stage`=\"stable\", `scope`=\"standard\")!\n"
+            "If rolled back, output: {\"atomic_status\": \"ROLLED_BACK\", \"modified_files_count\": 0}\n"
+            "Output ONLY JSON (no fences)."
+        ),
+        "expected": {"atomic_status": "ROLLED_BACK", "modified_files_count": 0},
+    })
+
+    # -------------------------------------------------------------
+    # 5. EXEC: Long Reversal Cascading Conditional Retraction
+    # -------------------------------------------------------------
+    reversal_rule = (
+        "Deployment Policy Rule:\n"
+        "Decision is strictly based on the FINAL CALIBRATED p99 latency in Benchmark Stage 2.\n"
+        "Ignore discarded uncalibrated runs in Stage 1 and capacity-limit stress tests in Stage 3.\n"
+        "- If final_p99_ms <= 150.0: Execute Plan-Alpha -> {\"final_p99_ms\": <float>, \"plan\": \"Plan-Alpha\", \"keep_autoscale\": true, \"retries_halved\": false}\n"
+        "- If final_p99_ms > 150.0: Execute Plan-Beta -> {\"final_p99_ms\": <float>, \"plan\": \"Plan-Beta\", \"keep_autoscale\": false, \"retries_halved\": true}\n"
+        "Output ONLY JSON (no fences)."
+    )
+
+    # Variant A: Stage 2 initially reported 178ms, but recalibrated to 0.148s (148ms <= 150.0 -> Plan-Alpha)
+    items.append({
+        "id": "exec_reversal_conditional_cascading_alpha",
+        "axis": "exec",
+        "cat": "long_reversal",
+        "grader": "json_exact",
+        "variant_group": "v22_reversal_cascade",
+        "variant": "alpha_148ms",
+        "float_tol": 0.1,
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            "Performance Benchmark Report (Release Candidate v3.1):\n"
+            "Stage 1 [Warmup Phase]: p99 latency recorded at 215ms. (NOTICE: Warmup phase data is invalid and discarded due to cold start).\n"
+            "Stage 2 [Steady-State Benchmark]: Initial run logged p99 = 178ms. "
+            "UPDATE: Diagnosis revealed sampling harness overhead; initial 178ms run is VOID AND RETRACTED. "
+            "Clean re-measurement calibrates final steady-state p99 at exactly 0.148s (148.0ms).\n"
+            "Stage 3 [Destructive Stress Test]: Under 50x overload p99 reached 820ms. "
+            "(NOTICE: Stage 3 is for disaster capacity ceiling reference only, not for release gating).\n\n"
+            f"{reversal_rule}"
+        ),
+        "expected": {"final_p99_ms": 148.0, "plan": "Plan-Alpha", "keep_autoscale": True, "retries_halved": False},
+    })
+
+    # Variant B: Stage 2 initially reported 142ms, but recalibrated to 158.5ms (> 150.0 -> Plan-Beta)
+    items.append({
+        "id": "exec_reversal_conditional_cascading_beta",
+        "axis": "exec",
+        "cat": "long_reversal",
+        "grader": "json_exact",
+        "variant_group": "v22_reversal_cascade",
+        "variant": "beta_158ms",
+        "float_tol": 0.1,
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            "Performance Benchmark Report (Release Candidate v3.1):\n"
+            "Stage 1 [Warmup Phase]: p99 latency recorded at 215ms. (NOTICE: Warmup phase data is invalid and discarded due to cold start).\n"
+            "Stage 2 [Steady-State Benchmark]: Initial run logged p99 = 142ms. "
+            "UPDATE: Clock jitter re-calibration invalidates the initial run; the 142ms figure is VOID AND RETRACTED. "
+            "Official final calibrated steady-state p99 is定稿 158.5ms.\n"
+            "Stage 3 [Destructive Stress Test]: Under 50x overload p99 reached 820ms. "
+            "(NOTICE: Stage 3 is for disaster capacity ceiling reference only, not for release gating).\n\n"
+            f"{reversal_rule}"
+        ),
+        "expected": {"final_p99_ms": 158.5, "plan": "Plan-Beta", "keep_autoscale": False, "retries_halved": True},
+    })
+
     return items

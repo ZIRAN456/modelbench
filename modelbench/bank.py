@@ -13,7 +13,7 @@ Stability Probes:
 import random
 from typing import Any, Dict, List
 
-from .bank_extra import make_extra_exec_items, make_extra_wisdom_items
+from .bank_extra import make_batch2_deep_items, make_extra_exec_items, make_extra_wisdom_items
 
 
 # ---------- Heterogeneous Noise Generator (Non-Repetitive) ----------
@@ -393,6 +393,80 @@ _MOCK_TOOLS_SPEC = [
                     "value": {"type": ["integer", "string", "boolean", "null"]},
                 },
                 "required": ["path", "key", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stage_canary",
+            "description": "Stage a canary deployment version for a service.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "version": {"type": "string"},
+                },
+                "required": ["service", "version"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "probe_upstream",
+            "description": "Probe health of service upstream (returns HTTP status and health state).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "target": {"type": "string"},
+                },
+                "required": ["service", "target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "abort_canary_stage",
+            "description": "Abort and clean up a staged canary before release.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["service", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "route_to_fallback",
+            "description": "Lock gateway route to fallback stable version.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "target": {"type": "string"},
+                },
+                "required": ["service", "target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "commit_canary_release",
+            "description": "Commit and finalize canary release to production traffic.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                },
+                "required": ["service"],
             },
         },
     },
@@ -910,7 +984,7 @@ def _make_deep_exec_items(rng: random.Random, full: bool) -> List[Dict[str, Any]
                 "pages": {},
             },
             "prompt": (
-                f"Update `/etc/router.json` key `threshold` to `{new_thresh}` using `write_mock_config`.\n"
+                f"Update `/etc/router.json` key `threshold` to integer {new_thresh} using `write_mock_config`.\n"
                 "Rules: 1) Check the tool response—if writing fails due to a transient lock, retry `write_mock_config`; "
                 "2) AFTER writing succeeds, call `read_mock_file` on `/etc/router.json` to verify the persisted value.\n"
                 'Output ONLY JSON (no fences): {"verified_threshold": <int>, "retries_needed": true}'
@@ -919,41 +993,67 @@ def _make_deep_exec_items(rng: random.Random, full: bool) -> List[Dict[str, Any]
         },
     ]
 
-    # 4-step cascading reversal with partial rollback + arithmetic delta
-    b0 = rng.randrange(500, 650)
-    delta_b = rng.randrange(80, 150)
-    r0 = 3
-    r1 = 5
+    # Multi-session timestamp clash with network out-of-order retransmission vs ghost rollback
     chunk_chars = 15000 if full else 4200
-    p1 = "\n".join(make_heterogeneous_logs(rng, chunk_chars, turn_prefix="MR_A"))
-    p2 = "\n".join(make_heterogeneous_logs(rng, chunk_chars, turn_prefix="MR_B"))
-    p3 = "\n".join(make_heterogeneous_logs(rng, chunk_chars, turn_prefix="MR_C"))
-    p4 = "\n".join(make_heterogeneous_logs(rng, chunk_chars, turn_prefix="MR_D"))
+    p1 = "\n".join(make_heterogeneous_logs(rng, chunk_chars, turn_prefix="LOG_S1"))
+    p2 = "\n".join(make_heterogeneous_logs(rng, chunk_chars, turn_prefix="LOG_S2"))
+    p3 = "\n".join(make_heterogeneous_logs(rng, chunk_chars, turn_prefix="LOG_S3"))
 
-    transcript = (
-        f"[Turn 1 User]: 初始基线设定：budget={b0}, mode='fast', retry={r0}, fallback='cbcn'。\n"
-        f"{p1}\n"
-        f"[Turn 38 User]: 临时调紧规则：把 mode 改成 'strict'，retry 改成 {r1}。\n"
-        f"{p2}\n"
-        f"[Turn 74 User REVERSAL]: 撤回 Turn 38 对 mode 的改动（恢复回 Turn 1 的设置），retry 保持 Turn 38 的值不变，另外把 budget 在初始值基础上削减 {delta_b}。\n"
-        f"{p3}\n"
-        f"[Turn 115 User FINAL]: 最后一道拍板：彻底禁用备用通道（fallback 改为 'none'），并且把当前生效的 retry 再减 1，其余字段沿用 Turn 74 后的生效状态。\n"
-        f"{p4}\n"
-    )
+    is_ghost_scenario = (rng.random() < 0.5)
+    if is_ghost_scenario:
+        # Variant B: Session-D has maximum timestamp and highest rev, but aborted by explicit rollback
+        log_session_a = "[2026-11-13T09:30:15Z Session-A INFO rev=10]: Init baseline timeout_ms=1000, policy='round_robin'"
+        log_session_c = "[2026-11-13T10:18:45Z Session-C COMMITTED rev=42]: Updated effective configuration to timeout_ms=3200, policy='least_conn'"
+        log_session_d_attempt = "[2026-11-13T10:25:00Z Session-D STAGED rev=50]: Proposing tentative update timeout_ms=5000, policy='experimental_ai'"
+        log_session_d_abort = "[2026-11-13T10:25:02Z Session-D CRITICAL]: Upstream validation failed -> TRANSACTION_ROLLBACK / ABORTED! Status: REVERTED_TO_REV_42"
+
+        transcript = (
+            f"{log_session_a}\n"
+            f"{p1}\n"
+            f"{log_session_c}\n"
+            f"{p2}\n"
+            f"{log_session_d_attempt}\n"
+            f"{log_session_d_abort}\n"
+            f"{p3}\n"
+        )
+        expected_ans = {"effective_timeout_ms": 3200, "active_policy": "least_conn", "winning_session": "Session-C"}
+        variant_tag = "ghost_rollback"
+    else:
+        # Variant A: Session-C has latest valid timestamp/rev, but appears earlier in transcript than delayed Session-B
+        log_session_a = "[2026-11-13T09:30:15Z Session-A INFO rev=10]: Init baseline timeout_ms=1000, policy='round_robin'"
+        log_session_c = "[2026-11-13T10:18:45Z Session-C COMMITTED rev=42]: Updated effective configuration to timeout_ms=2500, policy='canary_adaptive'"
+        log_session_b_delayed = "[2026-11-13T10:14:02Z Session-B RETRANSMIT rev=41]: Delayed network packet arriving out-of-order timeout_ms=1800, policy='weighted_random'"
+
+        transcript = (
+            f"{log_session_a}\n"
+            f"{log_session_c}\n"
+            f"{p1}\n"
+            f"{p2}\n"
+            f"{log_session_b_delayed}\n"
+            f"{p3}\n"
+        )
+        expected_ans = {"effective_timeout_ms": 2500, "active_policy": "canary_adaptive", "winning_session": "Session-C"}
+        variant_tag = "reorder_clash"
+
     items.append({
-        "id": f"exec_multi_reversal_{'full' if full else 'quick'}",
+        "id": f"exec_reversal_timestamp_clash_{'full' if full else 'quick'}",
         "axis": "exec",
         "cat": "multi_reversal",
         "grader": "json_exact",
+        "variant": variant_tag,
         "forbid_fences": True,
         "forbid_prose": True,
         "prompt": (
-            "Carefully track all 4 sequential configuration updates and rollbacks across the transcript below.\n\n"
-            f"{transcript}\n"
-            'Output ONLY the FINAL effective values as JSON (no fences): '
-            '{"budget": <int>, "mode": "<str>", "retry": <int>, "fallback": "<str>"}'
+            "Analyze the distributed gateway multi-session trace below to determine the effective runtime configuration.\n\n"
+            "Trace Data:\n"
+            f"{transcript}\n\n"
+            "Rules:\n"
+            "1) Packets from different sessions may arrive out-of-order due to network delays. Physical timestamp and revision dictate progression.\n"
+            "2) Any uncommitted transaction ending in TRANSACTION_ROLLBACK or ABORTED is void and must be ignored.\n"
+            "Output ONLY JSON (no fences):\n"
+            '{"effective_timeout_ms": <int>, "active_policy": "<str>", "winning_session": "<str>"}'
         ),
-        "expected": {"budget": b0 - delta_b, "mode": "fast", "retry": r1 - 1, "fallback": "none"},
+        "expected": expected_ans,
     })
     return items
 

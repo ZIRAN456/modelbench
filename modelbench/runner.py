@@ -57,6 +57,9 @@ def _exec_mock_tool(mock_fs: Dict[str, Any], name: str, raw_args: str) -> str:
         files = mock_fs.setdefault("files", {})
         if p not in files:
             return json.dumps({"written": False, "error": f"FileNotFoundError: {p}"})
+        fail_p = mock_fs.get("fail_path_write")
+        if fail_p and p == fail_p:
+            return json.dumps({"written": False, "error": f"IOError: [Errno 28] No space left on device while writing {p}"})
         if mock_fs.get("fail_first_write"):
             mock_fs["fail_first_write"] = False
             return json.dumps({"written": False, "error": "LockBusyError: transient lock on config file, please retry write"})
@@ -64,6 +67,57 @@ def _exec_mock_tool(mock_fs: Dict[str, Any], name: str, raw_args: str) -> str:
             files[p][key] = val
             return json.dumps({"written": True, "path": p, "key": key, "value": val}, ensure_ascii=False)
         return json.dumps({"written": False, "error": "TargetNotDictError"})
+
+    if name == "stage_canary":
+        svc = str(args.get("service", ""))
+        ver = str(args.get("version", ""))
+        mock_fs["staged_canary"] = {"service": svc, "version": ver}
+        mock_fs["canary_aborted"] = False
+        return json.dumps({"staged": True, "service": svc, "version": ver})
+
+    if name == "probe_upstream":
+        svc = str(args.get("service", ""))
+        target = str(args.get("target", ""))
+        behavior = mock_fs.get("probe_behavior", "fatal")
+        if behavior == "fatal":
+            return json.dumps({"status": 502, "health": "FAILED", "error": "UpstreamConnectionRefused"})
+        elif behavior == "transient":
+            if not mock_fs.get("transient_probed"):
+                mock_fs["transient_probed"] = True
+                return json.dumps({"status": 503, "health": "DEGRADED", "retry_after_ms": 200})
+            return json.dumps({"status": 200, "health": "HEALTHY", "latency_ms": 18})
+        return json.dumps({"status": 200, "health": "HEALTHY"})
+
+    if name == "abort_canary_stage":
+        svc = str(args.get("service", ""))
+        reason = str(args.get("reason", ""))
+        mock_fs["staged_canary"] = None
+        mock_fs["canary_aborted"] = True
+        return json.dumps({"aborted": True, "service": svc, "reason": reason})
+
+    if name == "route_to_fallback":
+        svc = str(args.get("service", ""))
+        target = str(args.get("target", ""))
+        files = mock_fs.setdefault("files", {})
+        routes_p = "/etc/gateway/routes.json"
+        rf = files.setdefault(routes_p, {})
+        rf["active_version"] = target
+        rf["status"] = "stable"
+        return json.dumps({"routed": True, "active_version": target, "status": "stable"})
+
+    if name == "commit_canary_release":
+        svc = str(args.get("service", ""))
+        if mock_fs.get("canary_aborted"):
+            return json.dumps({"committed": False, "error": "StageAbortedError: cannot commit aborted canary"})
+        staged = mock_fs.get("staged_canary")
+        if not staged:
+            return json.dumps({"committed": False, "error": "NotStagedError: no canary currently staged"})
+        files = mock_fs.setdefault("files", {})
+        routes_p = "/etc/gateway/routes.json"
+        rf = files.setdefault(routes_p, {})
+        rf["active_version"] = staged["version"]
+        rf["status"] = "released"
+        return json.dumps({"committed": True, "active_version": staged["version"], "status": "released"})
 
     return json.dumps({"error": f"UnknownToolError: {name}"})
 

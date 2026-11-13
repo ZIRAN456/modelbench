@@ -9,11 +9,18 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from modelbench.bank import generate_suite, make_heterogeneous_logs
-from modelbench.graders import GraderError, grade_item, grader_fingerprint
-from modelbench.report import analyze_model, format_report, load_records
-from modelbench.runner import run_benchmark
-from modelbench.sandbox import run_code_cases
+try:
+    from v2.bank import generate_suite, make_heterogeneous_logs
+    from v2.graders import GraderError, grade_item, grader_fingerprint
+    from v2.report import analyze_model, format_report, load_records
+    from v2.runner import run_benchmark
+    from v2.sandbox import run_code_cases
+except ImportError:
+    from modelbench.bank import generate_suite, make_heterogeneous_logs
+    from modelbench.graders import GraderError, grade_item, grader_fingerprint
+    from modelbench.report import analyze_model, format_report, load_records
+    from modelbench.runner import run_benchmark
+    from modelbench.sandbox import run_code_cases
 
 
 class TestBankAndStability(unittest.TestCase):
@@ -379,18 +386,54 @@ class TestExpanded50Suite(unittest.TestCase):
     def test_extra_code_reference_solutions(self):
         suite = {x["id"]: x for x in generate_suite(seed=123, profile="full")}
 
-        cron_sol = (
+        concurrency_sol = (
             "```python\n"
-            "def is_in_quiet_window(minute_of_day, start_min, end_min):\n"
-            "    if start_min == end_min:\n"
-            "        return False\n"
-            "    if start_min < end_min:\n"
-            "        return start_min <= minute_of_day < end_min\n"
-            "    return minute_of_day >= start_min or minute_of_day < end_min\n"
+            "def deduct_balance(account_db, uid, amount, max_retries=5):\n"
+            "    import time\n"
+            "    for attempt in range(max_retries + 1):\n"
+            "        info = account_db.get(uid)\n"
+            "        bal = info['balance']\n"
+            "        ver = info['version']\n"
+            "        if bal < amount:\n"
+            "            return False\n"
+            "        if account_db.compare_and_set(uid, ver, bal - amount, ver + 1):\n"
+            "            return True\n"
+            "        time.sleep(0.001 * (attempt + 1))\n"
+            "    return False\n"
             "```"
         )
-        p, r = grade_item(suite["wisdom_code_hard_cron_window"], cron_sol)
+        p, r = grade_item(suite["wisdom_code_concurrency_race"], concurrency_sol)
         self.assertEqual(p, 1, r)
+
+        # Anti-cheat 1: Global lock must be blocked by sandbox AST
+        cheat_lock_sol = (
+            "```python\n"
+            "import threading\n"
+            "_GLOBAL_LOCK = threading.Lock()\n"
+            "def deduct_balance(account_db, uid, amount, max_retries=5):\n"
+            "    with _GLOBAL_LOCK:\n"
+            "        info = account_db.get(uid)\n"
+            "        if info['balance'] < amount:\n"
+            "            return False\n"
+            "        return account_db.compare_and_set(uid, info['version'], info['balance'] - amount, info['version'] + 1)\n"
+            "```"
+        )
+        p_l, r_l = grade_item(suite["wisdom_code_concurrency_race"], cheat_lock_sol)
+        self.assertEqual(p_l, 0)
+        self.assertIn("forbidden lock", r_l)
+
+        # Anti-cheat 2: Naive non-retry race condition must fail assertions
+        cheat_race_sol = (
+            "```python\n"
+            "def deduct_balance(account_db, uid, amount, max_retries=5):\n"
+            "    info = account_db.get(uid)\n"
+            "    if info['balance'] < amount:\n"
+            "        return False\n"
+            "    return account_db.compare_and_set(uid, info['version'], info['balance'] - amount, info['version'] + 1)\n"
+            "```"
+        )
+        p_r, r_r = grade_item(suite["wisdom_code_concurrency_race"], cheat_race_sol)
+        self.assertEqual(p_r, 0)
 
         retry_sol = (
             "```python\n"
@@ -468,8 +511,72 @@ class TestExpanded50Suite(unittest.TestCase):
         patch_it = suite["exec_patch_config_discipline"]
         self.assertEqual(grade_item(patch_it, json.dumps(patch_it["expected"]))[0], 1)
 
+    def test_dynamic_canary_rollback_paired_anti_cheat(self):
+        # seed 102 gives fatal_abort, seed 100 gives transient_recover
+        suite_fatal = {x["id"]: x for x in generate_suite(seed=102, profile="full")}
+        suite_trans = {x["id"]: x for x in generate_suite(seed=100, profile="full")}
+
+        fatal_item = suite_fatal["exec_chain_dynamic_rollback"]
+        trans_item = suite_trans["exec_chain_dynamic_rollback"]
+        self.assertEqual(fatal_item.get("variant"), "fatal_abort")
+        self.assertEqual(trans_item.get("variant"), "transient_recover")
+
+        # Cheat 1: Always-commit cheat fails on fatal_abort
+        cheat_commit_trace = {
+            "called_tools": ["stage_canary", "probe_upstream", "commit_canary_release"],
+            "calls": [
+                {"name": "stage_canary", "arguments": '{"service":"payment","version":"v2.4.0"}'},
+                {"name": "probe_upstream", "arguments": '{"service":"payment","target":"canary"}'},
+                {"name": "commit_canary_release", "arguments": '{"service":"payment"}'},
+            ],
+            "rounds_exceeded": False,
+            "final_fs": {"files": {"/etc/gateway/routes.json": {"active_version": "v2.4.0", "status": "released"}}},
+        }
+        p_c, r_c = grade_item(fatal_item, json.dumps({"status": "released", "active_version": "v2.4.0"}), tool_trace=cheat_commit_trace)
+        self.assertEqual(p_c, 0)
+        self.assertIn("forbidden_tool_called", r_c)
+
+        # Cheat 2: Always-abort cheat fails on transient_recover
+        cheat_abort_trace = {
+            "called_tools": ["stage_canary", "probe_upstream", "abort_canary_stage", "route_to_fallback"],
+            "calls": [
+                {"name": "stage_canary", "arguments": '{"service":"payment","version":"v2.4.0"}'},
+                {"name": "probe_upstream", "arguments": '{"service":"payment","target":"canary"}'},
+                {"name": "abort_canary_stage", "arguments": '{"service":"payment","reason":"probe_failed"}'},
+                {"name": "route_to_fallback", "arguments": '{"service":"payment","target":"v2.3.9_stable"}'},
+            ],
+            "rounds_exceeded": False,
+            "final_fs": {"files": {"/etc/gateway/routes.json": {"active_version": "v2.3.9_stable", "status": "stable"}}},
+        }
+        p_a, r_a = grade_item(trans_item, json.dumps({"status": "rolled_back", "active_version": "v2.3.9_stable"}), tool_trace=cheat_abort_trace)
+        self.assertEqual(p_a, 0)
+        self.assertIn("forbidden_tool_called", r_a)
+
+    def test_timestamp_clash_paired_anti_cheat(self):
+        # seed 100 gives reorder_clash, seed 101 gives ghost_rollback
+        suite_reorder = {x["id"]: x for x in generate_suite(seed=100, profile="full")}
+        suite_ghost = {x["id"]: x for x in generate_suite(seed=101, profile="full")}
+
+        reorder_item = suite_reorder["exec_reversal_timestamp_clash_full"]
+        ghost_item = suite_ghost["exec_reversal_timestamp_clash_full"]
+        self.assertEqual(reorder_item.get("variant"), "reorder_clash")
+        self.assertEqual(ghost_item.get("variant"), "ghost_rollback")
+
+        # Cheat 1: Text-tail heuristic picks Session-B -> fails on reorder_clash
+        cheat_tail_ans = json.dumps({"effective_timeout_ms": 1800, "active_policy": "weighted_random", "winning_session": "Session-B"})
+        p_tail, _ = grade_item(reorder_item, cheat_tail_ans)
+        self.assertEqual(p_tail, 0)
+
+        # Cheat 2: Max-timestamp regex picks Session-D -> fails on ghost_rollback
+        cheat_ghost_ans = json.dumps({"effective_timeout_ms": 5000, "active_policy": "experimental_ai", "winning_session": "Session-D"})
+        p_ghost, _ = grade_item(ghost_item, cheat_ghost_ans)
+        self.assertEqual(p_ghost, 0)
+
     def test_sandbox_audit_hook_blocks_io_net_proc_but_allows_stdlib(self):
-        from modelbench.sandbox import run_code_cases
+        try:
+            from v2.sandbox import run_code_cases
+        except ImportError:
+            from modelbench.sandbox import run_code_cases
 
         # Stdlib math/re/datetime must still import and run cleanly
         ok_res = run_code_cases(
@@ -492,7 +599,10 @@ class TestExpanded50Suite(unittest.TestCase):
             self.assertIn("sandbox_blocked", r["results"][0]["error"])
 
     def test_expected_fs_strict_bool_vs_int_and_client_default(self):
-        from modelbench.client import resolve_endpoint
+        try:
+            from v2.client import resolve_endpoint
+        except ImportError:
+            from modelbench.client import resolve_endpoint
 
         old_env = os.environ.pop("OPENAI_BASE_URL", None)
         try:
@@ -540,6 +650,265 @@ class TestExpanded50Suite(unittest.TestCase):
             self.assertIn("95%CI", txt)
             self.assertIn("裸总分", txt)
             self.assertIn("tool_exec=0%", txt)
+
+
+class TestDeepBatch2Suite(unittest.TestCase):
+    """Full coverage of Batch 2 deep-tier items: Reference solutions + Anti-cheat zero-pass verification."""
+
+    def setUp(self):
+        try:
+            from v2.bank_extra import make_batch2_deep_items
+            from v2.bank import _MOCK_TOOLS_SPEC
+        except ImportError:
+            from modelbench.bank_extra import make_batch2_deep_items
+            from modelbench.bank import _MOCK_TOOLS_SPEC
+        import random
+        rng = random.Random(20261113)
+        self.items = {x["id"]: x for x in make_batch2_deep_items(rng, full=True, tools_spec=_MOCK_TOOLS_SPEC)}
+
+    def test_batch2_catalog_count(self):
+        # 4 cross_audit + 4 chain_shadow + 1 unicode_leak + 2 patch_triplet + 2 reversal_cascade = 13 items
+        self.assertEqual(len(self.items), 13)
+
+    def test_item1_cross_audit_2x2_matrix_and_anti_cheat(self):
+        # 1. Reference solutions for all 4 variants
+        clean_item = self.items["wisdom_cross_audit_drift_tz_clean"]
+        fx_item = self.items["wisdom_cross_audit_drift_tz_fx"]
+        missing_item = self.items["wisdom_cross_audit_drift_tz_missing"]
+        dual_item = self.items["wisdom_cross_audit_drift_tz_dual"]
+
+        sol_clean = json.dumps({"diff_type": ["CLEAN"], "drift_amount": 0.0, "missing_ids": []})
+        sol_fx = json.dumps({"diff_type": ["FX_DRIFT"], "drift_amount": 350.0, "missing_ids": []})
+        sol_missing = json.dumps({"diff_type": ["MISSING_SETTLEMENT"], "drift_amount": 0.0, "missing_ids": ["ord_202611_03"]})
+        sol_dual = json.dumps({"diff_type": ["FX_DRIFT", "MISSING_SETTLEMENT"], "drift_amount": 350.0, "missing_ids": ["ord_202611_03"]})
+
+        p1, _ = grade_item(clean_item, sol_clean)
+        p2, _ = grade_item(fx_item, sol_fx)
+        p3, _ = grade_item(missing_item, sol_missing)
+        p4, _ = grade_item(dual_item, sol_dual)
+        self.assertEqual((p1, p2, p3, p4), (1, 1, 1, 1))
+
+        # Anti-cheat A: Naive regex matching prior-month date (10-31) -> outputs MISSING on clean & fx -> FAILS
+        cheat_date_sol = json.dumps({"diff_type": ["MISSING_SETTLEMENT"], "drift_amount": 0.0, "missing_ids": ["ord_202611_01"]})
+        p_c1, _ = grade_item(clean_item, cheat_date_sol)
+        p_c2, _ = grade_item(fx_item, cheat_date_sol)
+        self.assertEqual(p_c1, 0)
+        self.assertEqual(p_c2, 0)
+
+        # Anti-cheat B: Always-clean cheat fails on fx, missing, dual
+        p_ac_fx, _ = grade_item(fx_item, sol_clean)
+        p_ac_m, _ = grade_item(missing_item, sol_clean)
+        self.assertEqual(p_ac_fx, 0)
+        self.assertEqual(p_ac_m, 0)
+
+    def test_item2_chain_shadow_matrix_and_anti_cheat(self):
+        up_item = self.items["wisdom_chain_distributed_shadow_upstream"]
+        gw_item = self.items["wisdom_chain_distributed_shadow_gateway"]
+        net_item = self.items["wisdom_chain_distributed_shadow_network"]
+        clk_item = self.items["wisdom_chain_distributed_shadow_clock"]
+
+        sol_up = json.dumps({"root_cause_code": "UPSTREAM_POOL_EXHAUSTED", "culprit_service": "order-service"})
+        sol_gw = json.dumps({"root_cause_code": "GATEWAY_JWT_LOCK_CONTENTION", "culprit_service": "api-gateway"})
+        sol_net = json.dumps({"root_cause_code": "NETWORK_PACKET_LOSS", "culprit_service": "vpc-nat-gateway"})
+        sol_clk = json.dumps({"root_cause_code": "HOST_CLOCK_SKEW", "culprit_service": "ntp-time-sync"})
+
+        p1, _ = grade_item(up_item, sol_up)
+        p2, _ = grade_item(gw_item, sol_gw)
+        p3, _ = grade_item(net_item, sol_net)
+        p4, _ = grade_item(clk_item, sol_clk)
+        self.assertEqual((p1, p2, p3, p4), (1, 1, 1, 1))
+
+        # Anti-cheat: Grep 'jwt' and conclude GATEWAY_JWT_LOCK_CONTENTION
+        # Since upstream also mentions 'jwt verify took 1.2ms (ok)', grep cheat picks gw on up_item and FAILS
+        p_cheat, _ = grade_item(up_item, sol_gw)
+        self.assertEqual(p_cheat, 0)
+
+    def test_item3_unicode_weakref_and_anti_cheat(self):
+        item = self.items["wisdom_code_unicode_and_leak"]
+
+        # 1. Reference Solution using NFKC + unicodedata.category(c) != 'Cf' + weakref.WeakMethod
+        ref_code = (
+            "```python\n"
+            "import unicodedata, weakref\n"
+            "class MessageRouter:\n"
+            "    def __init__(self):\n"
+            "        self._subscribers = {}\n"
+            "    def _clean_topic(self, topic: str) -> str:\n"
+            "        normalized = unicodedata.normalize('NFKC', str(topic))\n"
+            "        return ''.join(c for c in normalized if unicodedata.category(c) != 'Cf')\n"
+            "    def subscribe(self, topic: str, handler):\n"
+            "        t = self._clean_topic(topic)\n"
+            "        if hasattr(handler, '__self__') and hasattr(handler, '__func__'):\n"
+            "            ref = weakref.WeakMethod(handler)\n"
+            "        else:\n"
+            "            ref = weakref.ref(handler)\n"
+            "        self._subscribers.setdefault(t, []).append(ref)\n"
+            "    def publish(self, topic: str, payload):\n"
+            "        t = self._clean_topic(topic)\n"
+            "        subs = self._subscribers.get(t, [])\n"
+            "        alive = []\n"
+            "        for ref in subs:\n"
+            "            cb = ref()\n"
+            "            if cb is not None:\n"
+            "                alive.append(ref)\n"
+            "                cb(payload)\n"
+            "        self._subscribers[t] = alive\n"
+            "```"
+        )
+        p_ref, r_ref = grade_item(item, ref_code)
+        self.assertEqual(p_ref, 1, r_ref)
+
+        # Anti-cheat 1: No Cf normalization (fails subscriber Cf match)
+        cheat_no_cf = (
+            "```python\n"
+            "import weakref\n"
+            "class MessageRouter:\n"
+            "    def __init__(self):\n"
+            "        self._subscribers = {}\n"
+            "    def subscribe(self, topic: str, handler):\n"
+            "        self._subscribers.setdefault(topic.strip(), []).append(weakref.WeakMethod(handler) if hasattr(handler, '__self__') else weakref.ref(handler))\n"
+            "    def publish(self, topic: str, payload):\n"
+            "        for ref in self._subscribers.get(topic.strip(), []):\n"
+            "            cb = ref()\n"
+            "            if cb: cb(payload)\n"
+            "```"
+        )
+        p_c1, r_c1 = grade_item(item, cheat_no_cf)
+        self.assertEqual(p_c1, 0)
+        self.assertIn("cf_unicode_clean_failed", r_c1)
+
+        # Anti-cheat 2: Strong reference retain (fails memory leak GC test)
+        cheat_strong = (
+            "```python\n"
+            "import unicodedata\n"
+            "class MessageRouter:\n"
+            "    def __init__(self):\n"
+            "        self._subscribers = {}\n"
+            "    def _clean_topic(self, topic: str) -> str:\n"
+            "        return ''.join(c for c in unicodedata.normalize('NFKC', str(topic)) if unicodedata.category(c) != 'Cf')\n"
+            "    def subscribe(self, topic: str, handler):\n"
+            "        self._subscribers.setdefault(self._clean_topic(topic), []).append(handler)\n"
+            "    def publish(self, topic: str, payload):\n"
+            "        for cb in self._subscribers.get(self._clean_topic(topic), []):\n"
+            "            cb(payload)\n"
+            "```"
+        )
+        p_c2, r_c2 = grade_item(item, cheat_strong)
+        self.assertEqual(p_c2, 0)
+        self.assertIn("memory_leak", r_c2)
+
+        # Anti-cheat 3: Direct weakref.ref on bound method (immediate dead reference bug, handler never called!)
+        cheat_dead_weakref = (
+            "```python\n"
+            "import unicodedata, weakref\n"
+            "class MessageRouter:\n"
+            "    def __init__(self):\n"
+            "        self._subscribers = {}\n"
+            "    def _clean_topic(self, topic: str) -> str:\n"
+            "        return ''.join(c for c in unicodedata.normalize('NFKC', str(topic)) if unicodedata.category(c) != 'Cf')\n"
+            "    def subscribe(self, topic: str, handler):\n"
+            "        self._subscribers.setdefault(self._clean_topic(topic), []).append(weakref.ref(handler))\n"
+            "    def publish(self, topic: str, payload):\n"
+            "        for ref in self._subscribers.get(self._clean_topic(topic), []):\n"
+            "            cb = ref()\n"
+            "            if cb: cb(payload)\n"
+            "```"
+        )
+        p_c3, r_c3 = grade_item(item, cheat_dead_weakref)
+        self.assertEqual(p_c3, 0)
+        self.assertIn("cf_unicode_clean_failed", r_c3)
+
+    def test_item4_atomic_triplet_rollback_and_anti_cheat(self):
+        commit_item = self.items["exec_patch_atomic_triplet_commit"]
+        rollback_item = self.items["exec_patch_atomic_triplet_rollback"]
+
+        # 1. Commit variant passes when all 3 files are committed
+        commit_trace = {
+            "called_tools": ["write_mock_config", "write_mock_config", "write_mock_config", "read_mock_file"],
+            "calls": [
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/gateway/routes.json","key":"stage","value":"canary"}'},
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/security/auth.json","key":"scope","value":"beta_tester"}'},
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/monitor/ratelimit.json","key":"qps","value":200}'},
+                {"name": "read_mock_file", "arguments": '{"path":"/etc/gateway/routes.json"}'},
+            ],
+            "rounds_exceeded": False,
+            "final_fs": {
+                "files": {
+                    "/etc/gateway/routes.json": {"stage": "canary"},
+                    "/etc/security/auth.json": {"scope": "beta_tester"},
+                    "/etc/monitor/ratelimit.json": {"qps": 200},
+                }
+            },
+        }
+        p_c, r_c = grade_item(commit_item, json.dumps({"atomic_status": "COMMITTED", "modified_files_count": 3}), tool_trace=commit_trace)
+        self.assertEqual(p_c, 1, r_c)
+
+        # 2. Rollback variant passes when third write fails and previous 2 files are rolled back to stable
+        rollback_trace = {
+            "called_tools": ["write_mock_config", "write_mock_config", "write_mock_config", "write_mock_config", "write_mock_config"],
+            "calls": [
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/gateway/routes.json","key":"stage","value":"canary"}'},
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/security/auth.json","key":"scope","value":"beta_tester"}'},
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/monitor/ratelimit.json","key":"qps","value":200}'},
+                # Compensating rollbacks:
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/gateway/routes.json","key":"stage","value":"stable"}'},
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/security/auth.json","key":"scope","value":"standard"}'},
+            ],
+            "rounds_exceeded": False,
+            "final_fs": {
+                "files": {
+                    "/etc/gateway/routes.json": {"stage": "stable"},
+                    "/etc/security/auth.json": {"scope": "standard"},
+                    "/etc/monitor/ratelimit.json": {"qps": 5000},
+                }
+            },
+        }
+        p_r, r_r = grade_item(rollback_item, json.dumps({"atomic_status": "ROLLED_BACK", "modified_files_count": 0}), tool_trace=rollback_trace)
+        self.assertEqual(p_r, 1, r_r)
+
+        # Anti-cheat: Blind commit without rollback on failure -> leaves routes.json at canary -> FAILS fs check!
+        unrolled_trace = {
+            "called_tools": ["write_mock_config", "write_mock_config", "write_mock_config"],
+            "calls": [
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/gateway/routes.json","key":"stage","value":"canary"}'},
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/security/auth.json","key":"scope","value":"beta_tester"}'},
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/monitor/ratelimit.json","key":"qps","value":200}'},
+            ],
+            "rounds_exceeded": False,
+            "final_fs": {
+                "files": {
+                    "/etc/gateway/routes.json": {"stage": "canary"},
+                    "/etc/security/auth.json": {"scope": "beta_tester"},
+                    "/etc/monitor/ratelimit.json": {"qps": 5000},
+                }
+            },
+        }
+        p_cheat, r_cheat = grade_item(rollback_item, json.dumps({"atomic_status": "ROLLED_BACK", "modified_files_count": 0}), tool_trace=unrolled_trace)
+        self.assertEqual(p_cheat, 0)
+        self.assertIn("fs_state_mismatch", r_cheat)
+
+    def test_item5_reversal_cascading_and_anti_cheat(self):
+        alpha_item = self.items["exec_reversal_conditional_cascading_alpha"]
+        beta_item = self.items["exec_reversal_conditional_cascading_beta"]
+
+        sol_alpha = json.dumps({"final_p99_ms": 148.0, "plan": "Plan-Alpha", "keep_autoscale": True, "retries_halved": False})
+        sol_beta = json.dumps({"final_p99_ms": 158.5, "plan": "Plan-Beta", "keep_autoscale": False, "retries_halved": True})
+
+        p_a, r_a = grade_item(alpha_item, sol_alpha)
+        p_b, r_b = grade_item(beta_item, sol_beta)
+        self.assertEqual((p_a, p_b), (1, 1))
+
+        # Anti-cheat 1: Greedy grab initial Stage 2 number (alpha picks 178ms -> Beta; beta picks 142ms -> Alpha)
+        # Results are completely inverted!
+        p_inv_a, _ = grade_item(alpha_item, sol_beta)
+        p_inv_b, _ = grade_item(beta_item, sol_alpha)
+        self.assertEqual(p_inv_a, 0)
+        self.assertEqual(p_inv_b, 0)
+
+        # Anti-cheat 2: Grab last number in text (picks 820ms from Stage 3 -> Plan-Beta)
+        # Fails on alpha variant!
+        p_last_a, _ = grade_item(alpha_item, sol_beta)
+        self.assertEqual(p_last_a, 0)
 
 
 if __name__ == "__main__":

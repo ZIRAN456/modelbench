@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 
 
 _HARNESS = r'''
-import copy, io, json, os, sys, traceback
+import copy, io, json, os, sys, threading, traceback
 
 def _install_audit_hook():
     allowed_prefixes = tuple(
@@ -71,6 +71,23 @@ def _main():
 
     _install_audit_hook()
 
+    if spec.get("concurrency_test"):
+        import ast
+        try:
+            tree = ast.parse(code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr in ("Lock", "RLock", "Semaphore", "BoundedSemaphore"):
+                    _emit({"ok": False, "error": f"security_violation: forbidden lock used ({node.attr}), must use CAS DB primitives"})
+                    return
+                if isinstance(node, ast.ImportFrom) and node.module == "threading":
+                    for alias in node.names:
+                        if alias.name in ("Lock", "RLock", "Semaphore", "BoundedSemaphore"):
+                            _emit({"ok": False, "error": f"security_violation: forbidden lock imported ({alias.name}), must use CAS DB primitives"})
+                            return
+        except Exception as exc:
+            _emit({"ok": False, "error": f"AST parse error: {exc}"})
+            return
+
     ns = {}
     try:
         exec(compile(code, "<candidate>", "exec"), ns, ns)
@@ -82,6 +99,107 @@ def _main():
     if not callable(fn):
         _emit({"ok": False, "error": f"function '{fn_name}' not found or not callable"})
         return
+
+    if spec.get("concurrency_test"):
+        import concurrent.futures, time
+        class MockAccountDB:
+            def __init__(self, bal=1000, ver=0):
+                self._bal = bal
+                self._ver = ver
+                self._l = threading.Lock()
+            def get(self, uid):
+                with self._l:
+                    res = {"balance": self._bal, "version": self._ver}
+                time.sleep(0.0005)
+                return res
+            def compare_and_set(self, uid, exp_ver, new_bal, new_ver):
+                with self._l:
+                    if self._ver == exp_ver:
+                        self._bal = new_bal
+                        self._ver = new_ver
+                        return True
+                    return False
+
+        db = MockAccountDB(1000, 0)
+        t0 = time.time()
+        success_cnt = 0
+        fail_cnt = 0
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+                futs = [pool.submit(fn, db, 1, 15, 10) for _ in range(100)]
+                for fut in concurrent.futures.as_completed(futs):
+                    res = fut.result()
+                    if res is True:
+                        success_cnt += 1
+                    else:
+                        fail_cnt += 1
+            elapsed = time.time() - t0
+            if elapsed > 2.0:
+                results = [{"ok": False, "error": f"concurrency_timeout: elapsed={elapsed:.2f}s > 2.0s"}]
+            else:
+                results = [{"ok": True, "value": {
+                    "success_count": success_cnt,
+                    "fail_count": fail_cnt,
+                    "final_balance": db._bal,
+                    "final_version": db._ver,
+                }}]
+        except Exception as exc:
+            results = [{"ok": False, "error": f"concurrency_exec_error: {type(exc).__name__}: {exc}"}]
+        _emit({"ok": True, "results": results})
+        return
+
+    if spec.get("unicode_weakref_test"):
+        import gc, weakref
+        cls = ns.get(fn_name)
+        if not isinstance(cls, type):
+            _emit({"ok": False, "error": f"'{fn_name}' must be a class, got {type(cls).__name__}"})
+            return
+
+        try:
+            router = cls()
+            cf_received = []
+            class Handler:
+                def on_event(self, p):
+                    cf_received.append(p)
+            h = Handler()
+            # Mix real Cf control characters across subscribe and publish
+            topic_sub = "orders\u200b_event\ufeff"
+            topic_pub = "orders\u2060_event\u200e"
+
+            router.subscribe(topic_sub, h.on_event)
+            router.publish(topic_pub, {"order_id": 999})
+
+            if len(cf_received) != 1 or cf_received[0] != {"order_id": 999}:
+                _emit({"ok": False, "error": "cf_unicode_clean_failed: handler not invoked or Cf normalization mismatch"})
+                return
+
+            sentinel = weakref.ref(h)
+            del h
+            for _ in range(5):
+                gc.collect()
+
+            if sentinel() is not None:
+                _emit({"ok": False, "error": "memory_leak: handler instance was not garbage collected (strong reference retained)"})
+                return
+
+            try:
+                router.publish(topic_pub, {"order_id": 1000})
+            except Exception as exc:
+                _emit({"ok": False, "error": f"post_gc_publish_error: dead weakref caused exception {exc}"})
+                return
+
+            _emit({"ok": True, "results": [{
+                "ok": True,
+                "value": {
+                    "cf_clean_verified": True,
+                    "gc_sentinel_collected": True,
+                    "safe_post_gc": True,
+                }
+            }]})
+            return
+        except Exception as exc:
+            _emit({"ok": False, "error": f"unicode_weakref_test_error: {type(exc).__name__}: {exc}"})
+            return
 
     results = []
     for case in cases:
@@ -132,6 +250,8 @@ def run_code_cases(
     cases: List[Dict[str, Any]],
     inplace: bool = False,
     check_no_mutate: bool = False,
+    concurrency_test: bool = False,
+    unicode_weakref_test: bool = False,
     timeout_s: float = 5.0,
 ) -> Dict[str, Any]:
     """Execute candidate Python code inside a fresh -I isolated subprocess in a temp directory."""
@@ -147,6 +267,8 @@ def run_code_cases(
                 "cases": [{"args": c["args"], "kwargs": c.get("kwargs") or {}} for c in cases],
                 "inplace": inplace,
                 "check_no_mutate": check_no_mutate,
+                "concurrency_test": concurrency_test,
+                "unicode_weakref_test": unicode_weakref_test,
             },
             ensure_ascii=False,
         )
