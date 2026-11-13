@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.2.5 — 2026-11-13
+
+Documentation / naming release. **No prompt or grading change**: the suite
+fingerprint is unchanged, so scores from v2.2.4 remain directly comparable.
+
+### Axis renamed to say what it measures
+- User-facing label `智慧` -> **`审慎`** (English `Wisdom` -> **`Judgment`**), in the
+  report header, both READMEs, the RFC and the report template.
+- Internal key stays `axis="wisdom"`, so existing JSONL records and aggregation
+  keep working.
+- Both READMEs now carry a glossary line: the axis measures close reading,
+  reconciliation, root-cause attribution and rule compliance — **not** an IQ test.
+
+### Decision report template
+- `docs/REPORT_TEMPLATE.md`: conclusion-first one-pager (主力 / 备胎 / 不建议,
+  evidence table, per-model verdicts, limits, suggested usage, next steps).
+
 ## v2.2.4 — 2026-11-13
 
 ### Terminology fix (last open Hark note)
