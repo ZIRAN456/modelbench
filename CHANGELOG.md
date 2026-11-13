@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.2.1 — 2026-11-13
+
+Closes the scoring hole left open in v2.2.0: the paired contract was written in the
+RFC but never enforced in code.
+
+### Paired (all-or-nothing) scoring
+- New `modelbench/scoring.py`: `paired_scores()` / `units_from_suite()`.
+  A `variant_group` earns credit **only when every variant in the group passes**.
+  A one-sided heuristic now scores 0 instead of 75%.
+- Incomplete groups (a variant that never ran) score 0 and are reported in
+  `incomplete_units`, so a silent gap cannot inflate a score.
+- Axis rates are normalised per axis, so the two axes stay comparable even though
+  paired groups collapse several raw items into one scoring unit.
+- `report` gains a 成对计分 block (paired score / units / per-axis / missing groups).
+
+### Canary rollout becomes a real 2x2 matrix
+- `exec_chain_dynamic_rollback` (one variant drawn per seed, i.e. a coin flip) is
+  replaced by four co-shipped variants in group `v221_canary_rollback`:
+  `fatal_abort`, `transient_recover`, `clean_all_ok`, `dual_fault`.
+- New `clean` / `dual` mock behaviours; every probe response now carries the same
+  `retry_after_ms` + `latency_ms` distractors, so those fields cannot label a case.
+- Anti-cheat: always-commit scores 0 (fails fatal + dual), always-abort scores 0
+  (fails clean + transient).
+- `patch_triplet` and `reversal_cascade` are now paired groups too.
+
+### Suite
+- 57 raw items -> **42 scoring units** (19 Wisdom / 23 Execution).
+
 ## v2.2.0 — 2026-11-13
 
 Red-team hardened Batch-2 suite (review-driven).

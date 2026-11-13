@@ -270,8 +270,10 @@ def make_extra_exec_items(rng: random.Random, full: bool, make_logs_fn, tools_sp
         "expected": {"aborted": True, "written": False},
     })
 
-    # 7. Dynamic tool chain with transactional rollback vs transient recovery (tool_deep_chain)
-    is_fatal_scenario = (rng.random() < 0.5)
+    # 7. Canary rollout 2x2 matrix (paired scoring: all four variants must pass)
+    #    fatal_abort / transient_recover / clean_all_ok / dual_fault.
+    #    Every probe response carries `retry_after_ms` + `latency_ms`, so neither field
+    #    can be used as a surface label for the scenario.
     rollback_prompt = (
         "You are executing a canary deployment for service 'payment'.\n"
         "Discipline & Workflow:\n"
@@ -286,53 +288,50 @@ def make_extra_exec_items(rng: random.Random, full: bool, make_logs_fn, tools_sp
         'If committed: {"status": "released", "active_version": "v2.4.0"}\n'
         'If rolled back: {"status": "rolled_back", "active_version": "v2.3.9_stable"}'
     )
-    if is_fatal_scenario:
+
+    _ROLLBACK_STABLE_FS = {"/etc/gateway/routes.json": {"active_version": "v2.3.9_stable", "status": "stable"}}
+    _ROLLBACK_RELEASED_FS = {"/etc/gateway/routes.json": {"active_version": "v2.4.0", "status": "released"}}
+    _ROLLBACK_SCENARIOS = [
+        # (id_suffix, probe_behavior, must_abort)
+        ("fatal", "fatal", True),
+        ("transient", "transient", False),
+        ("clean", "clean", False),
+        ("dual", "dual", True),
+    ]
+    for suffix, behavior, must_abort in _ROLLBACK_SCENARIOS:
         rb_fs = {
             "dirs": {},
             "files": {"/etc/gateway/routes.json": {"active_version": "v2.3.9_stable", "status": "stable"}},
             "pages": {},
-            "probe_behavior": "fatal",
+            "probe_behavior": behavior,
         }
+        if must_abort:
+            required = ["stage_canary", "probe_upstream", "abort_canary_stage", "route_to_fallback"]
+            forbidden = ["commit_canary_release"]
+            exp_fs = _ROLLBACK_STABLE_FS
+            expected = {"status": "rolled_back", "active_version": "v2.3.9_stable"}
+        else:
+            required = ["stage_canary", "probe_upstream", "commit_canary_release"]
+            forbidden = ["abort_canary_stage", "route_to_fallback"]
+            exp_fs = _ROLLBACK_RELEASED_FS
+            expected = {"status": "released", "active_version": "v2.4.0"}
         items.append({
-            "id": "exec_chain_dynamic_rollback",
+            "id": f"exec_chain_dynamic_rollback_{suffix}",
             "axis": "exec",
             "cat": "tool_deep_chain",
             "grader": "tool_exec",
             "tools": tools_spec,
-            "max_rounds": 6,
-            "forbidden_tools": ["commit_canary_release"],
-            "required_tools": ["stage_canary", "probe_upstream", "abort_canary_stage", "route_to_fallback"],
-            "expected_fs": {"/etc/gateway/routes.json": {"active_version": "v2.3.9_stable", "status": "stable"}},
-            "variant": "fatal_abort",
+            "max_rounds": 8,
+            "forbidden_tools": forbidden,
+            "required_tools": required,
+            "expected_fs": exp_fs,
+            "variant_group": "v221_canary_rollback",
+            "variant": suffix,
             "forbid_fences": True,
             "forbid_prose": True,
             "mock_fs": rb_fs,
             "prompt": rollback_prompt,
-            "expected": {"status": "rolled_back", "active_version": "v2.3.9_stable"},
-        })
-    else:
-        rb_fs = {
-            "dirs": {},
-            "files": {"/etc/gateway/routes.json": {"active_version": "v2.3.9_stable", "status": "stable"}},
-            "pages": {},
-            "probe_behavior": "transient",
-        }
-        items.append({
-            "id": "exec_chain_dynamic_rollback",
-            "axis": "exec",
-            "cat": "tool_deep_chain",
-            "grader": "tool_exec",
-            "tools": tools_spec,
-            "max_rounds": 6,
-            "forbidden_tools": ["abort_canary_stage"],
-            "required_tools": ["stage_canary", "probe_upstream", "commit_canary_release"],
-            "expected_fs": {"/etc/gateway/routes.json": {"active_version": "v2.4.0", "status": "released"}},
-            "variant": "transient_recover",
-            "forbid_fences": True,
-            "forbid_prose": True,
-            "mock_fs": rb_fs,
-            "prompt": rollback_prompt,
-            "expected": {"status": "released", "active_version": "v2.4.0"},
+            "expected": expected,
         })
 
     strict_int = 4500 + rng.randrange(100, 900)
@@ -655,6 +654,8 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
     # Variant A: Clean commit (all 3 configs patched atomically)
     items.append({
         "id": "exec_patch_atomic_triplet_commit",
+        "variant_group": "v22_patch_triplet",
+        "variant": "commit_path",
         "axis": "exec",
         "cat": "patch_discipline",
         "grader": "tool_exec",
@@ -691,6 +692,8 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
     # Variant B: Disk Quota Failure on 3rd file -> Must rollback previous 2 files!
     items.append({
         "id": "exec_patch_atomic_triplet_rollback",
+        "variant_group": "v22_patch_triplet",
+        "variant": "rollback_path",
         "axis": "exec",
         "cat": "patch_discipline",
         "grader": "tool_exec",
@@ -742,10 +745,10 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
     # Variant A: Stage 2 initially reported 178ms, but recalibrated to 0.148s (148ms <= 150.0 -> Plan-Alpha)
     items.append({
         "id": "exec_reversal_conditional_cascading_alpha",
+        "variant_group": "v22_reversal_cascade",
         "axis": "exec",
         "cat": "long_reversal",
         "grader": "json_exact",
-        "variant_group": "v22_reversal_cascade",
         "variant": "alpha_148ms",
         "float_tol": 0.1,
         "forbid_fences": True,
@@ -766,10 +769,10 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
     # Variant B: Stage 2 initially reported 142ms, but recalibrated to 158.5ms (> 150.0 -> Plan-Beta)
     items.append({
         "id": "exec_reversal_conditional_cascading_beta",
+        "variant_group": "v22_reversal_cascade",
         "axis": "exec",
         "cat": "long_reversal",
         "grader": "json_exact",
-        "variant_group": "v22_reversal_cascade",
         "variant": "beta_158ms",
         "float_tol": 0.1,
         "forbid_fences": True,

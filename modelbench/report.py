@@ -6,6 +6,8 @@ import math
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
+from .scoring import paired_scores
+
 
 def wilson_ci(p: float, n: int, z: float = 1.96) -> Tuple[float, float]:
     if n <= 0:
@@ -228,4 +230,17 @@ def format_report(path: str, batch: Optional[str] = None) -> str:
         )
         if s["infra_pct"] > 0.05:
             lines.append(f"    [WARN] 链路/传输/判分异常占比 {s['infra_pct']*100:.1f}% > 5%，建议核查网关后再定论。")
+
+    # ---- paired (all-or-nothing) scoring: the only rate that counts for variant groups ----
+    paired = paired_scores(records)
+    lines.append("")
+    lines.append("-" * 136)
+    lines.append("成对计分（同组变体全对才得 1 分；单边启发式=0）:")
+    lines.append(f"{'模型':30s} {'成对分':>7s} {'单位':>5s} {'智慧':>6s} {'执行':>6s} {'缺件组':>6s}")
+    for m, ps in sorted(paired["models"].items(), key=lambda kv: kv[1]["score"], reverse=True):
+        ax = ps["axis_scores"]
+        lines.append(
+            f"{m[:30]:30s} {ps['score']:6.1f}% {ps['units']:5d} "
+            f"{ax.get('wisdom', 0.0):5.1f}% {ax.get('exec', 0.0):5.1f}% {len(ps['incomplete_units']):6d}"
+        )
     return "\n".join(lines)

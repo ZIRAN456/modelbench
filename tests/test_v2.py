@@ -381,13 +381,38 @@ class TestRunnerMockEndToEndAndReport(unittest.TestCase):
 
 
 class TestExpanded50Suite(unittest.TestCase):
-    def test_full_suite_54_symmetric_balance(self):
+    def test_full_suite_shape_and_paired_units(self):
+        try:
+            from v2.scoring import units_from_suite
+        except ImportError:
+            from modelbench.scoring import units_from_suite
+
         suite = generate_suite(seed=20261112, profile="full")
-        w = [x for x in suite if x["axis"] == "wisdom"]
-        e = [x for x in suite if x["axis"] == "exec"]
-        self.assertEqual(len(suite), 54)
-        self.assertEqual(len(w), 27)
-        self.assertEqual(len(e), 27)
+        self.assertEqual(len(suite), 57)
+        ids = [x["id"] for x in suite]
+        self.assertEqual(len(ids), len(set(ids)), "item ids must be unique")
+
+        units = units_from_suite(suite)
+        self.assertEqual(len(units), 42)
+        per_axis = {}
+        for meta in units.values():
+            per_axis[meta["axis"]] = per_axis.get(meta["axis"], 0) + 1
+        # Each axis is normalised on its own, so unit counts need not be identical,
+        # but neither axis may be a token presence.
+        self.assertGreaterEqual(per_axis["wisdom"], 18)
+        self.assertGreaterEqual(per_axis["exec"], 18)
+
+        # The four canary scenarios must always ship together as one paired unit.
+        canary = units["v221_canary_rollback"]["variants"]
+        self.assertEqual(
+            canary,
+            {
+                "exec_chain_dynamic_rollback_fatal",
+                "exec_chain_dynamic_rollback_transient",
+                "exec_chain_dynamic_rollback_clean",
+                "exec_chain_dynamic_rollback_dual",
+            },
+        )
 
     def test_extra_code_reference_solutions(self):
         suite = {x["id"]: x for x in generate_suite(seed=123, profile="full")}
@@ -514,51 +539,53 @@ class TestExpanded50Suite(unittest.TestCase):
         self.assertEqual(grade_item(clin, json.dumps(clin["expected"]))[0], 1)
 
     def test_dynamic_canary_rollback_paired_anti_cheat(self):
-        # Variant draw shifts whenever the generator consumes a different number of
-        # RNG draws, so discover one seed per variant instead of hardcoding a magic seed.
-        seen = {}
-        for seed in range(90, 160):
-            item = {x["id"]: x for x in generate_suite(seed=seed, profile="full")}.get("exec_chain_dynamic_rollback")
-            if item is not None and item.get("variant") not in seen:
-                seen[item["variant"]] = item
-            if {"fatal_abort", "transient_recover"} <= set(seen):
-                break
-        self.assertIn("fatal_abort", seen, "generator must still emit the fatal_abort variant")
-        self.assertIn("transient_recover", seen, "generator must still emit the transient_recover variant")
-
-        fatal_item = seen["fatal_abort"]
-        trans_item = seen["transient_recover"]
-
-        # Cheat 1: Always-commit cheat fails on fatal_abort
-        cheat_commit_trace = {
-            "called_tools": ["stage_canary", "probe_upstream", "commit_canary_release"],
-            "calls": [
-                {"name": "stage_canary", "arguments": '{"service":"payment","version":"v2.4.0"}'},
-                {"name": "probe_upstream", "arguments": '{"service":"payment","target":"canary"}'},
-                {"name": "commit_canary_release", "arguments": '{"service":"payment"}'},
-            ],
-            "rounds_exceeded": False,
-            "final_fs": {"files": {"/etc/gateway/routes.json": {"active_version": "v2.4.0", "status": "released"}}},
+        # All four scenarios must be present in a single suite: 2x2 matrix
+        # (fatal_abort / transient_recover / clean_all_ok / dual_fault).
+        suite = {x["id"]: x for x in generate_suite(seed=20261112, profile="full")}
+        variants = {
+            "fatal": suite["exec_chain_dynamic_rollback_fatal"],
+            "transient": suite["exec_chain_dynamic_rollback_transient"],
+            "clean": suite["exec_chain_dynamic_rollback_clean"],
+            "dual": suite["exec_chain_dynamic_rollback_dual"],
         }
-        p_c, r_c = grade_item(fatal_item, json.dumps({"status": "released", "active_version": "v2.4.0"}), tool_trace=cheat_commit_trace)
-        self.assertEqual(p_c, 0)
-        self.assertIn("forbidden_tool_called", r_c)
+        for name, item in variants.items():
+            self.assertEqual(item.get("variant_group"), "v221_canary_rollback", name)
+            self.assertEqual(item.get("variant"), name)
 
-        # Cheat 2: Always-abort cheat fails on transient_recover
-        cheat_abort_trace = {
-            "called_tools": ["stage_canary", "probe_upstream", "abort_canary_stage", "route_to_fallback"],
-            "calls": [
-                {"name": "stage_canary", "arguments": '{"service":"payment","version":"v2.4.0"}'},
-                {"name": "probe_upstream", "arguments": '{"service":"payment","target":"canary"}'},
-                {"name": "abort_canary_stage", "arguments": '{"service":"payment","reason":"probe_failed"}'},
-                {"name": "route_to_fallback", "arguments": '{"service":"payment","target":"v2.3.9_stable"}'},
-            ],
-            "rounds_exceeded": False,
-            "final_fs": {"files": {"/etc/gateway/routes.json": {"active_version": "v2.3.9_stable", "status": "stable"}}},
-        }
-        p_a, r_a = grade_item(trans_item, json.dumps({"status": "rolled_back", "active_version": "v2.3.9_stable"}), tool_trace=cheat_abort_trace)
-        self.assertEqual(p_a, 0)
-        self.assertIn("forbidden_tool_called", r_a)
+        def trace(tools, final_fs):
+            return {
+                "called_tools": tools,
+                "calls": [{"name": t, "arguments": "{}"} for t in tools],
+                "rounds_exceeded": False,
+                "final_fs": {"files": final_fs},
+            }
+
+        commit_trace = trace(
+            ["stage_canary", "probe_upstream", "commit_canary_release"],
+            {"/etc/gateway/routes.json": {"active_version": "v2.4.0", "status": "released"}},
+        )
+        abort_trace = trace(
+            ["stage_canary", "probe_upstream", "abort_canary_stage", "route_to_fallback"],
+            {"/etc/gateway/routes.json": {"active_version": "v2.3.9_stable", "status": "stable"}},
+        )
+        released_ans = json.dumps({"status": "released", "active_version": "v2.4.0"})
+        rolled_ans = json.dumps({"status": "rolled_back", "active_version": "v2.3.9_stable"})
+
+        # Cheat 1: always commit -> must fail on the two abort scenarios.
+        for name in ("fatal", "dual"):
+            p, r = grade_item(variants[name], released_ans, tool_trace=commit_trace)
+            self.assertEqual(p, 0, f"always-commit cheat scored on {name}: {r}")
+            self.assertIn("forbidden_tool_called", r)
+
+        # Cheat 2: always abort -> must fail on the two commit scenarios.
+        for name in ("clean", "transient"):
+            p, r = grade_item(variants[name], rolled_ans, tool_trace=abort_trace)
+            self.assertEqual(p, 0, f"always-abort cheat scored on {name}: {r}")
+            self.assertIn("forbidden_tool_called", r)
+
+        # Reference solutions still pass, otherwise the gate is a wall not a filter.
+        self.assertEqual(grade_item(variants["clean"], released_ans, tool_trace=commit_trace)[0], 1)
+        self.assertEqual(grade_item(variants["fatal"], rolled_ans, tool_trace=abort_trace)[0], 1)
 
     def test_timestamp_clash_paired_anti_cheat(self):
         # seed 100 gives reorder_clash, seed 101 gives ghost_rollback
@@ -917,6 +944,94 @@ class TestDeepBatch2Suite(unittest.TestCase):
         # Fails on alpha variant!
         p_last_a, _ = grade_item(alpha_item, sol_beta)
         self.assertEqual(p_last_a, 0)
+
+
+class TestPairedScoring(unittest.TestCase):
+    """Hark rule #1: a variant group only scores when every variant passes."""
+
+    def _rec(self, model, item_id, group, rep, passed, axis="exec"):
+        return {
+            "model": model,
+            "item_id": item_id,
+            "variant_group": group,
+            "rep": rep,
+            "passed": passed,
+            "axis": axis,
+        }
+
+    def test_all_variants_pass_scores_one_unit(self):
+        try:
+            from v2.scoring import paired_scores
+        except ImportError:
+            from modelbench.scoring import paired_scores
+
+        recs = [self._rec("m", f"g_{v}", "grp", 1, True) for v in ("a", "b", "c", "d")]
+        out = paired_scores(recs)
+        self.assertAlmostEqual(out["models"]["m"]["score"], 100.0)
+        self.assertAlmostEqual(out["models"]["m"]["detail"]["grp"]["score"], 1.0)
+
+    def test_single_sided_heuristic_scores_zero(self):
+        try:
+            from v2.scoring import paired_scores
+        except ImportError:
+            from modelbench.scoring import paired_scores
+
+        # 3 of 4 variants correct: the classic one-sided heuristic. Must be 0, not 75%.
+        recs = [self._rec("m", "g_a", "grp", 1, True),
+                self._rec("m", "g_b", "grp", 1, True),
+                self._rec("m", "g_c", "grp", 1, True),
+                self._rec("m", "g_d", "grp", 1, False)]
+        out = paired_scores(recs)
+        self.assertAlmostEqual(out["models"]["m"]["score"], 0.0)
+        self.assertEqual(out["models"]["m"]["units"], 1)
+
+    def test_incomplete_group_scores_zero_and_is_reported(self):
+        try:
+            from v2.scoring import paired_scores, units_from_suite
+        except ImportError:
+            from modelbench.scoring import paired_scores, units_from_suite
+
+        suite = [
+            {"id": "g_a", "axis": "exec", "cat": "x", "variant_group": "grp"},
+            {"id": "g_b", "axis": "exec", "cat": "x", "variant_group": "grp"},
+        ]
+        expected = units_from_suite(suite)
+        recs = [self._rec("m", "g_a", "grp", 1, True)]  # g_b never ran
+        out = paired_scores(recs, expected_units=expected)
+        model = out["models"]["m"]
+        self.assertAlmostEqual(model["score"], 0.0)
+        self.assertIn("grp", model["incomplete_units"])
+
+    def test_ungrouped_items_stay_individual_units(self):
+        try:
+            from v2.scoring import paired_scores
+        except ImportError:
+            from modelbench.scoring import paired_scores
+
+        recs = [
+            self._rec("m", "solo_1", None, 1, True),
+            self._rec("m", "solo_2", None, 1, False),
+        ]
+        out = paired_scores(recs)
+        self.assertEqual(out["models"]["m"]["units"], 2)
+        self.assertAlmostEqual(out["models"]["m"]["score"], 50.0)
+
+    def test_axis_rates_are_normalised_per_axis(self):
+        try:
+            from v2.scoring import paired_scores
+        except ImportError:
+            from modelbench.scoring import paired_scores
+
+        recs = [
+            self._rec("m", "w1", None, 1, True, axis="wisdom"),
+            self._rec("m", "e1", None, 1, True, axis="exec"),
+            self._rec("m", "e2", None, 1, False, axis="exec"),
+            self._rec("m", "e3", None, 1, False, axis="exec"),
+        ]
+        out = paired_scores(recs)
+        ax = out["models"]["m"]["axis_scores"]
+        self.assertAlmostEqual(ax["wisdom"], 100.0)
+        self.assertAlmostEqual(ax["exec"], 33.33, places=1)
 
 
 if __name__ == "__main__":

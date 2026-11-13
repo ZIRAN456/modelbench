@@ -79,14 +79,25 @@ def _exec_mock_tool(mock_fs: Dict[str, Any], name: str, raw_args: str) -> str:
         svc = str(args.get("service", ""))
         target = str(args.get("target", ""))
         behavior = mock_fs.get("probe_behavior", "fatal")
+        # Every branch carries the same distractor fields so that no surface
+        # feature (retry_after_ms / latency_ms) can label the scenario.
         if behavior == "fatal":
-            return json.dumps({"status": 502, "health": "FAILED", "error": "UpstreamConnectionRefused"})
+            return json.dumps({"status": 502, "health": "FAILED", "error": "UpstreamConnectionRefused",
+                               "retry_after_ms": 200, "latency_ms": 41})
         elif behavior == "transient":
             if not mock_fs.get("transient_probed"):
                 mock_fs["transient_probed"] = True
-                return json.dumps({"status": 503, "health": "DEGRADED", "retry_after_ms": 200})
-            return json.dumps({"status": 200, "health": "HEALTHY", "latency_ms": 18})
-        return json.dumps({"status": 200, "health": "HEALTHY"})
+                return json.dumps({"status": 503, "health": "DEGRADED", "retry_after_ms": 200, "latency_ms": 2600})
+            return json.dumps({"status": 200, "health": "HEALTHY", "retry_after_ms": 200, "latency_ms": 18})
+        elif behavior == "dual":
+            n = int(mock_fs.get("dual_probes", 0)) + 1
+            mock_fs["dual_probes"] = n
+            if n == 1:
+                return json.dumps({"status": 502, "health": "FAILED", "error": "UpstreamConnectionRefused",
+                                   "retry_after_ms": 200, "latency_ms": 41})
+            return json.dumps({"status": 503, "health": "DEGRADED", "error": "LockTimeout: jwt rotation lock held",
+                               "retry_after_ms": 200, "latency_ms": 2600})
+        return json.dumps({"status": 200, "health": "HEALTHY", "retry_after_ms": 200, "latency_ms": 18})
 
     if name == "abort_canary_stage":
         svc = str(args.get("service", ""))
