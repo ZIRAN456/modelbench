@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.2.8 — 2026-11-14
+
+### Fixed — audit-item expected values and long-noise pairing
+
+- `wisdom_trap_1_clean` now expects the **expanded** integer total
+  `1,250,000` for `445k + 445k + 360k`, not `1250`. Previously a model that
+  answered `1250` was marked correct, while the mathematically correct
+  `1250000` was marked wrong.
+- `wisdom_stress_long_consistent_true` now computes its consistent twin from
+  only the three components in the core audit memo
+  (`Server=351, Proxy=399, Backup=221` → `971`). Previously the generator
+  summed every `key=number` token in the 55k-char noise history, producing
+  `22,509,878` and leaving the prompt internally inconsistent.
+- `wisdom_chain_distributed_shadow_clock` now includes an explicit
+  `ntp-time-sync` log line, so the expected `culprit_service` is supported by
+  the prompt instead of being absent from the evidence.
+
+### Tests
+
+- Added regression tests for expanded `k` units, core-memo-only audit
+  siblings, prompt/expected consistency across all audit items, and chain
+  culprits appearing in the prompt. **42 tests pass.**
+
+### Compatibility
+
+- Suite item prompts/expected values changed for the three items above, so
+  scores from earlier runs are not directly comparable on those items. No
+  grader logic changed; `grader_fingerprint` is unchanged.
+
 ## v2.2.7 — 2026-11-14
 
 ### Changed

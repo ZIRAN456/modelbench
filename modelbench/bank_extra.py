@@ -660,6 +660,7 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
             "Logs & Traces:\n"
             "[15:00:00.010] [api-gateway] INFO req_id=9815 sent\n"
             "[15:00:06.215] [order-service] INFO req_id=9815 received (ntp_drift_detected=-6205ms)\n"
+            "[15:00:06.218] [ntp-time-sync] ERROR clock correction failed for host-order-01: residual offset=-6205ms\n"
             "[15:00:00.028] [api-gateway] INFO req_id=9815 roundtrip completed in 18ms\n"
             "[15:00:06.220] [monitor-agent] WARN host ntp offset exceeds threshold: -6205ms on host-order-01\n"
         ),

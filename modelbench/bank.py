@@ -272,7 +272,7 @@ def _make_trap_detect_items(rng: random.Random, full: bool) -> List[Dict[str, An
             f"Q3 Cost Breakdown: Compute={a}k, Storage={b}k, Bandwidth={c}k.\n"
             f"Executive Summary claims Total Q3 Cost = {reported_sum}k, and asks to forecast Q4 at +10% above the true total.\n"
         )
-        expected_total = None if is_trap else real_sum
+        expected_total = None if is_trap else real_sum * 1000
         prompt = (
             "Audit the financial note below. First verify whether the stated Total equals the sum of Compute + Storage + Bandwidth.\n"
             "If inconsistent, do NOT blindly compute a forecast; set `consistent` to false and `computed_total` to null.\n"
@@ -1033,9 +1033,24 @@ def _pair_audit_trap_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not (isinstance(exp, dict) and "consistent" in exp and exp.get("computed_total") is None):
             continue
         prompt = item.get("prompt") or ""
-        m = _AUDIT_TOTAL_RE.search(prompt)
-        comps = _AUDIT_COMP_RE.findall(prompt[: m.start()] if m else prompt)
-        if len(comps) < 2 or not m:
+        # Long stress prompts prepend tens of thousands of synthetic history
+        # lines.  Only the core audit memo describes the components; summing
+        # every `key=number` in the noise produces nonsense totals.
+        core_start = max(
+            prompt.rfind("Audit the financial note"),
+            prompt.rfind("Audit this expense memo"),
+        )
+        if core_start < 0:
+            core_start = 0
+        m = _AUDIT_TOTAL_RE.search(prompt, core_start)
+        if not m:
+            continue
+        comps = [
+            (key, num, suf)
+            for key, num, suf in _AUDIT_COMP_RE.findall(prompt[core_start : m.start()])
+            if key in {"Compute", "Storage", "Bandwidth", "Server", "Proxy", "Backup"}
+        ]
+        if len(comps) != 3:
             continue
         total = sum(int(num) * (1000 if suf == "k" else 1) for _, num, suf in comps)
         raw_total = total // 1000 if m.group(3) == "k" else total

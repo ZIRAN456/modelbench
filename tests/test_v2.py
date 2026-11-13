@@ -4,6 +4,7 @@
 import json
 import os
 import random
+import re
 import sys
 import tempfile
 import unittest
@@ -1131,6 +1132,97 @@ class TestPairedScoring(unittest.TestCase):
         ax = out["models"]["m"]["axis_scores"]
         self.assertAlmostEqual(ax["wisdom"], 100.0)
         self.assertAlmostEqual(ax["exec"], 33.33, places=1)
+
+
+class TestAuditPairingRegressions(unittest.TestCase):
+    """Regression: audit siblings must be consistent and use only core-memo values."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.full = {it["id"]: it for it in generate_suite(seed=20261112, profile="full")}
+
+    def test_clean_audit_trap_expands_k_units(self):
+        item = self.full["wisdom_trap_1_clean"]
+        self.assertEqual(item["expected"], {"consistent": True, "computed_total": 1_250_000})
+        self.assertEqual(
+            grade_item(item, '{"consistent": true, "computed_total": 1250000}')[0], 1
+        )
+        self.assertEqual(
+            grade_item(item, '{"consistent": true, "computed_total": 1250}')[0], 0
+        )
+
+    def test_long_audit_consistent_twin_uses_core_memo(self):
+        item = self.full["wisdom_stress_long_consistent_true"]
+        self.assertEqual(item["expected"], {"consistent": True, "computed_total": 971})
+        self.assertIn("Stated Total=971.", item["prompt"])
+        self.assertNotIn("Stated Total=22509878", item["prompt"])
+        self.assertEqual(
+            grade_item(item, '{"consistent": true, "computed_total": 971}')[0], 1
+        )
+
+    def test_audit_siblings_are_consistent(self):
+        checked = 0
+        for item in self.full.values():
+            group = item.get("variant_group") or ""
+            if not (group.startswith("v222_audit_pair_") and item.get("variant") == "consistent"):
+                continue
+            prompt = item["prompt"]
+            core_start = max(
+                prompt.rfind("Audit the financial note"),
+                prompt.rfind("Audit this expense memo"),
+            )
+            self.assertGreaterEqual(core_start, 0, item["id"])
+            core = prompt[core_start:]
+            comps = re.findall(
+                r"\b(Compute|Storage|Bandwidth|Server|Proxy|Backup)=(\d+)(k?)\b",
+                core,
+            )
+            self.assertEqual(len(comps), 3, item["id"])
+            total = sum(int(num) * (1000 if suf == "k" else 1) for _, num, suf in comps)
+            self.assertEqual(item["expected"]["computed_total"], total, item["id"])
+            stated = re.search(r"Stated Total=(\d+)(k?)\.", core)
+            if stated is None:
+                stated = re.search(r"Total Q3 Cost\s*=\s*(\d+)(k?)\b", core)
+            self.assertIsNotNone(stated, item["id"])
+            stated_total = int(stated.group(1)) * (1000 if stated.group(2) == "k" else 1)
+            self.assertEqual(stated_total, total, item["id"])
+            checked += 1
+        self.assertGreaterEqual(checked, 4)
+
+    def test_all_audit_items_expected_matches_prompt(self):
+        checked = 0
+        for item in self.full.values():
+            prompt = item.get("prompt") or ""
+            if "Audit the financial note" not in prompt and "Audit this expense memo" not in prompt:
+                continue
+            core_start = max(
+                prompt.rfind("Audit the financial note"),
+                prompt.rfind("Audit this expense memo"),
+            )
+            core = prompt[core_start:]
+            comps = re.findall(
+                r"\b(Compute|Storage|Bandwidth|Server|Proxy|Backup)=(\d+)(k?)\b",
+                core,
+            )
+            self.assertEqual(len(comps), 3, item["id"])
+            total = sum(int(num) * (1000 if suf == "k" else 1) for _, num, suf in comps)
+            stated = re.search(r"(?:Stated Total|Total Q3 Cost)\s*=\s*(\d+)(k?)\b", core)
+            self.assertIsNotNone(stated, item["id"])
+            stated_total = int(stated.group(1)) * (1000 if stated.group(2) == "k" else 1)
+            expected = item["expected"]["computed_total"]
+            if expected is None:
+                self.assertNotEqual(stated_total, total, item["id"])
+            else:
+                self.assertEqual(stated_total, total, item["id"])
+                self.assertEqual(expected, total, item["id"])
+            checked += 1
+        self.assertGreaterEqual(checked, 8)
+
+    def test_chain_culprits_are_present_in_prompt(self):
+        for item in self.full.values():
+            if item.get("variant_group") != "v22_chain_shadow":
+                continue
+            self.assertIn(item["expected"]["culprit_service"], item["prompt"], item["id"])
 
 
 if __name__ == "__main__":
