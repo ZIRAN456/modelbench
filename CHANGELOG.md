@@ -1,5 +1,53 @@
 # Changelog
 
+## v2.2.2 — 2026-11-13
+
+Second-pass close-out of the Hark red-team list: the deep-tier matrices were
+already paired, but nine details still leaked (or were never built).
+
+### Paired coverage extended
+- `exec_reversal_timestamp_clash_full` was still drawn per seed (a coin flip, the
+  same defect the canary had). Both scenarios now ship together in group
+  `v222_timestamp_clash` (`_reorder` / `_ghost`), and each variant carries the
+  other's distractor marker (a rollback line in the reorder case, a stale
+  RETRANSMIT line in the ghost case) so no surface feature labels the answer.
+- Audit traps `wisdom_trap_0/2_conflict`, `wisdom_stress_clean/long` always
+  answered `consistent: false, computed_total: null` — a free win for any constant
+  bot. Each now has a consistent twin (stated total corrected) in
+  `v222_audit_pair_*`, so the unit only scores when the model actually re-adds.
+- `exec_patch_atomic_triplet` grows three variants: `idempotent_noop` (already at
+  target state — any audited write fails), `duplicate_guard` (role already present,
+  must not be duplicated) and `reverse_direction` (production -> tests).
+- `v22_cross_audit` grows `retransmit_only` (duplicate bank rows must be deduped,
+  not flagged missing) and `jpy_precision` (JPY has zero decimals; a float
+  implementation reports a phantom FX drift).
+- `v22_reversal_cascade` grows `gamma_150ms`: the p99 sits exactly on 150.0, so
+  the `<=` / `<` boundary is finally tested.
+
+### Unicode item hardened
+- Cf characters are drawn per seed from an 11-char candidate pool (6 injected), so
+  hardcoding `\u200b`/`\ufeff` no longer passes.
+- The contract now says: NFKC first, then drop Cf **except** U+200C (ZWNJ) and
+  U+200D (ZWJ). Blanket "strip all Cf" collapses emoji sequences and Persian
+  words; the sandbox proves it by subscribing both spellings and requiring that
+  they do **not** collide.
+- A bound-method subscriber is registered as well: `weakref.ref(bound_method)`
+  dies immediately and now fails with `bound_method_lost`.
+- Subprocess stdio is pinned to UTF-8 (`stdin.buffer` + `reconfigure`), so
+  non-BMP Cf characters survive the Windows cp936 console.
+
+### Cheat-bot baseline (Hark requirement #4)
+- New `scripts/cheat_bots.py`: four degenerate solvers (`constant`, `keyword`,
+  `last_number`, `superset`) scored against every unit with paired aggregation.
+- Measured: **0.0% on all 42 units for all four bots** (exit code 0 required).
+  Regression-tested in `test_degenerate_cheat_bots_score_zero`.
+
+### CI
+- Perf probe split further: correctness/mutation run with a 30s budget, while the
+  O(N^2) probe uses a tight 1.5s copy, so neither a slow nor a fast runner can
+  flip the assertion.
+- Suite: 68 raw items -> **42 scoring units** (19 Wisdom / 23 Execution).
+
 ## v2.2.1 — 2026-11-13
 
 Closes the scoring hole left open in v2.2.0: the paired contract was written in the

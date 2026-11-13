@@ -411,7 +411,10 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
         "2) Contract exchange rate is fixed at trade creation time (T+0). If bank settles next day (T+1) under dynamic spot rate, "
         "the difference is an FX drift (`FX_DRIFT`).\n"
         "3) If an internal order has no corresponding bank settlement record, it is a missing settlement (`MISSING_SETTLEMENT`).\n"
-        "4) Currency amounts must be calculated with Decimal precision (rounding bankers round to 2 decimals).\n"
+        "4) Currency amounts must be calculated with Decimal precision (bankers rounding, 2 decimals for USD/CNY; JPY has ZERO decimals).\n"
+        "5) Amount comparison tolerance is +/- 1 minor unit of the settlement currency; anything larger is a real drift.\n"
+        "6) The bank ledger may contain RETRANSMITTED rows for the same settlement_batch: deduplicate them by settlement_batch. "
+        "A retransmission is NOT a missing settlement and NOT a drift.\n"
         "Allowed diff_type list values: [\"CLEAN\", \"FX_DRIFT\", \"MISSING_SETTLEMENT\"].\n"
         "Output ONLY JSON (no fences): {\"diff_type\": [<str>, ...], \"drift_amount\": <float>, \"missing_ids\": [<str>, ...]}"
     )
@@ -514,6 +517,56 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
         "expected": {"diff_type": ["FX_DRIFT", "MISSING_SETTLEMENT"], "drift_amount": 350.0, "missing_ids": ["ord_202611_03"]},
     })
 
+    # Variant 100: retransmission only (duplicate bank rows, nothing missing) -> must dedupe, not flag
+    items.append({
+        "id": "wisdom_cross_audit_drift_tz_retransmit",
+        "axis": "wisdom",
+        "cat": "cross_audit",
+        "grader": "json_exact",
+        "variant_group": "v22_cross_audit",
+        "variant": "retransmit_only",
+        "float_tol": 0.05,
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            f"{base_prompt_lead}\n\n"
+            "Orders Table (UTC):\n"
+            "- ord_202611_01: 2026-10-31 23:55:00 UTC, 100.00 USD, locked_rate=7.1500 (cross-month normal)\n"
+            "- ord_202611_02: 2026-11-12 10:00:00 UTC, 500.00 USD, locked_rate=7.2000\n"
+            "- ord_202611_03: 2026-11-12 14:30:00 UTC, 250.00 USD, locked_rate=7.2000\n\n"
+            "Bank Settlement Ledger (UTC):\n"
+            "- stl_b1_01: ord_202611_01, batch=B7, settled_at=2026-11-01 02:00:00 UTC, settled_cny=715.00 (rate=7.1500)\n"
+            "- stl_b1_02: ord_202611_02, batch=B8, settled_at=2026-11-12 10:15:00 UTC, settled_cny=3600.00 (rate=7.2000)\n"
+            "- stl_b1_02: ord_202611_02, batch=B8, settled_at=2026-11-12 10:15:00 UTC, settled_cny=3600.00 (rate=7.2000) [retransmit]\n"
+            "- stl_b1_03: ord_202611_03, batch=B9, settled_at=2026-11-12 14:45:00 UTC, settled_cny=1800.00 (rate=7.2000)\n"
+        ),
+        "expected": {"diff_type": ["CLEAN"], "drift_amount": 0.0, "missing_ids": []},
+    })
+
+    # Variant 101: JPY zero-decimal currency + bankers-rounding trap (float impl reports a phantom drift)
+    items.append({
+        "id": "wisdom_cross_audit_drift_tz_jpy",
+        "axis": "wisdom",
+        "cat": "cross_audit",
+        "grader": "json_exact",
+        "variant_group": "v22_cross_audit",
+        "variant": "jpy_precision",
+        "float_tol": 0.05,
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            f"{base_prompt_lead}\n\n"
+            "Orders Table (UTC):\n"
+            "- ord_202611_01: 2026-10-31 23:55:00 UTC, 100.00 USD, locked_rate=7.1500 (cross-month normal)\n"
+            "- ord_202611_05: 2026-11-13 09:00:00 UTC, 15001 JPY, locked_rate=0.0480\n\n"
+            "Bank Settlement Ledger (UTC):\n"
+            "- stl_b1_01: ord_202611_01, batch=B7, settled_at=2026-11-01 02:00:00 UTC, settled_cny=715.00 (rate=7.1500)\n"
+            "- stl_b1_05: ord_202611_05, batch=B12, settled_at=2026-11-13 09:20:00 UTC, settled_cny=720.05 (rate=0.0480)\n"
+            "Note: 15001 JPY x 0.0480 = 720.048 CNY; settled 720.05 CNY compares within tolerance.\n"
+        ),
+        "expected": {"diff_type": ["CLEAN"], "drift_amount": 0.0, "missing_ids": []},
+    })
+
     # -------------------------------------------------------------
     # 2. WISDOM: Root Cause Chain Diagnostics (2x2 Matrix)
     # -------------------------------------------------------------
@@ -613,6 +666,9 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
     # -------------------------------------------------------------
     # 3. WISDOM: Unicode Cf Filtering & WeakMethod Leak Defense
     # -------------------------------------------------------------
+    # Random Cf pool per seed: a candidate that hardcodes \u200b/\ufeff cannot pass.
+    _cf_candidates = [0x200B, 0x200E, 0x200F, 0x2060, 0xFEFF, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0xE0001]
+    unicode_cf_pool = [chr(cp) for cp in rng.sample(_cf_candidates, 6)]
     items.append({
         "id": "wisdom_code_unicode_and_leak",
         "axis": "wisdom",
@@ -620,15 +676,20 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
         "grader": "code_fix",
         "fn_name": "MessageRouter",
         "unicode_weakref_test": True,
+        "unicode_cf_pool": unicode_cf_pool,
         "timeout_s": 4.0,
         "prompt": (
             "Implement a high-performance event message router class `MessageRouter` in Python with the following API:\n"
             "- `subscribe(self, topic: str, handler: callable) -> None`\n"
             "- `publish(self, topic: str, payload: Any) -> None`\n\n"
             "CRITICAL PRODUCTION REQUIREMENTS:\n"
-            "1) Unicode Cleanliness: Topics may contain invisible zero-width or formatting control characters.\n"
-            "   Normalize topic using NFKC and strictly strip all characters where `unicodedata.category(c) == 'Cf'` "
-            "   (e.g. \\u200b, \\u2060, \\ufeff, \\u200e, \\u202a etc.), while preserving normal alphanumerics and valid words.\n"
+            "1) Unicode Cleanliness (contract is exact, follow the order literally):\n"
+            "   a. Apply `unicodedata.normalize('NFKC', topic)` FIRST;\n"
+            "   b. Then drop every character whose `unicodedata.category(c) == 'Cf'` EXCEPT U+200C (ZWNJ) and U+200D (ZWJ).\n"
+            "      Those two are load-bearing: U+200D joins emoji sequences (e.g. \\U0001F468\\u200d\\U0001F469) and\n"
+            "      U+200C is required inside Persian words (e.g. \\u0645\\u06cc\\u200c\\u062e\\u0648\\u0627\\u0647\\u0645).\n"
+            "      A blanket 'strip all Cf' implementation is WRONG and will be rejected.\n"
+            "   Topics are matched AFTER this cleaning, so two differently-polluted spellings must hit the same subscriber.\n"
             "2) Memory Leak Prevention (Hark Red-Team Discipline):\n"
             "   Subscribers may register instance methods without unregistering.\n"
             "   You MUST use `weakref.WeakMethod` for bound instance methods (or `weakref.ref` for plain callables) "
@@ -641,6 +702,8 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
                 "args": [],
                 "expected": {
                     "cf_clean_verified": True,
+                    "zwj_preserved": True,
+                    "zwnj_preserved": True,
                     "gc_sentinel_collected": True,
                     "safe_post_gc": True,
                 },
@@ -730,6 +793,125 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
         "expected": {"atomic_status": "ROLLED_BACK", "modified_files_count": 0},
     })
 
+    # Variant C: already in target state -> must be a no-op (no writes at all)
+    items.append({
+        "id": "exec_patch_atomic_triplet_idempotent",
+        "variant_group": "v22_patch_triplet",
+        "variant": "idempotent_noop",
+        "axis": "exec",
+        "cat": "patch_discipline",
+        "grader": "tool_exec",
+        "tools": tools_spec,
+        "max_rounds": 8,
+        "required_tools": ["read_mock_file"],
+        "forbidden_tools": ["write_mock_config"],
+        "expected_fs": {
+            "/etc/gateway/routes.json": {"stage": "canary"},
+            "/etc/security/auth.json": {"scope": "beta_tester"},
+            "/etc/monitor/ratelimit.json": {"qps": 200},
+        },
+        "mock_fs": {
+            "dirs": {},
+            "files": {
+                "/etc/gateway/routes.json": {"stage": "canary"},
+                "/etc/security/auth.json": {"scope": "beta_tester"},
+                "/etc/monitor/ratelimit.json": {"qps": 200},
+            },
+            "pages": {},
+        },
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            "Bring the 3 config files to the canary-rollout target state using `write_mock_config`:\n"
+            "1) `/etc/gateway/routes.json`: `stage` = \"canary\"\n"
+            "2) `/etc/security/auth.json`: `scope` = \"beta_tester\"\n"
+            "3) `/etc/monitor/ratelimit.json`: `qps` = 200\n"
+            "CRITICAL IDEMPOTENCY RULE: read before writing. If a file ALREADY holds the target value, "
+            "do NOT rewrite it (writes are audited and replaying them is a production incident).\n"
+            "Output: {\"atomic_status\": \"NOOP\", \"modified_files_count\": 0}\n"
+            "Output ONLY JSON (no fences)."
+        ),
+        "expected": {"atomic_status": "NOOP", "modified_files_count": 0},
+    })
+
+    # Variant D: target already present inside a list -> must not duplicate the entry
+    items.append({
+        "id": "exec_patch_atomic_triplet_duplicate",
+        "variant_group": "v22_patch_triplet",
+        "variant": "duplicate_guard",
+        "axis": "exec",
+        "cat": "patch_discipline",
+        "grader": "tool_exec",
+        "tools": tools_spec,
+        "max_rounds": 10,
+        "required_tools": ["write_mock_config", "read_mock_file"],
+        "expected_fs": {
+            "/etc/gateway/routes.json": {"stage": "canary"},
+            "/etc/security/auth.json": {"roles": ["standard", "beta_tester"]},
+            "/etc/monitor/ratelimit.json": {"qps": 200},
+        },
+        "mock_fs": {
+            "dirs": {},
+            "files": {
+                "/etc/gateway/routes.json": {"stage": "stable"},
+                "/etc/security/auth.json": {"roles": ["standard", "beta_tester"]},
+                "/etc/monitor/ratelimit.json": {"qps": 5000},
+            },
+            "pages": {},
+        },
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            "Apply the canary rollout with `write_mock_config`:\n"
+            "1) `/etc/gateway/routes.json`: `stage` = \"canary\"\n"
+            "2) `/etc/security/auth.json`: `roles` must contain \"beta_tester\" EXACTLY ONCE "
+            "(read it first: if already present, keep the list unchanged, do not append a duplicate)\n"
+            "3) `/etc/monitor/ratelimit.json`: `qps` = 200\n"
+            "Output: {\"atomic_status\": \"COMMITTED\", \"modified_files_count\": <int>}. "
+            "Count ONLY the files whose value actually changed.\n"
+            "Output ONLY JSON (no fences)."
+        ),
+        "expected": {"atomic_status": "COMMITTED", "modified_files_count": 2},
+    })
+
+    # Variant E: reverse direction (production -> canary), rollback semantics inverted
+    items.append({
+        "id": "exec_patch_atomic_triplet_reverse",
+        "variant_group": "v22_patch_triplet",
+        "variant": "reverse_direction",
+        "axis": "exec",
+        "cat": "patch_discipline",
+        "grader": "tool_exec",
+        "tools": tools_spec,
+        "max_rounds": 8,
+        "required_tools": ["write_mock_config"],
+        "expected_fs": {
+            "/etc/gateway/routes.json": {"stage": "tests"},
+            "/etc/security/auth.json": {"scope": "standard"},
+            "/etc/monitor/ratelimit.json": {"qps": 5000},
+        },
+        "mock_fs": {
+            "dirs": {},
+            "files": {
+                "/etc/gateway/routes.json": {"stage": "production"},
+                "/etc/security/auth.json": {"scope": "beta_tester"},
+                "/etc/monitor/ratelimit.json": {"qps": 200},
+            },
+            "pages": {},
+        },
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            "Roll the payment service BACK from production to tests with `write_mock_config`:\n"
+            "1) `/etc/gateway/routes.json`: `stage` = \"tests\"\n"
+            "2) `/etc/security/auth.json`: `scope` = \"standard\"\n"
+            "3) `/etc/monitor/ratelimit.json`: `qps` = 5000\n"
+            "Output: {\"atomic_status\": \"COMMITTED\", \"modified_files_count\": 3}\n"
+            "Output ONLY JSON (no fences)."
+        ),
+        "expected": {"atomic_status": "COMMITTED", "modified_files_count": 3},
+    })
+
     # -------------------------------------------------------------
     # 5. EXEC: Long Reversal Cascading Conditional Retraction
     # -------------------------------------------------------------
@@ -764,6 +946,30 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
             f"{reversal_rule}"
         ),
         "expected": {"final_p99_ms": 148.0, "plan": "Plan-Alpha", "keep_autoscale": True, "retries_halved": False},
+    })
+
+    # Variant C: exactly on the boundary (150.0 -> Plan-Alpha, the `<=` branch)
+    items.append({
+        "id": "exec_reversal_conditional_cascading_gamma",
+        "variant_group": "v22_reversal_cascade",
+        "axis": "exec",
+        "cat": "long_reversal",
+        "grader": "json_exact",
+        "variant": "gamma_150ms",
+        "float_tol": 0.1,
+        "forbid_fences": True,
+        "forbid_prose": True,
+        "prompt": (
+            "Performance Benchmark Report (Release Candidate v3.1):\n"
+            "Stage 1 [Warmup Phase]: p99 latency recorded at 215ms. (NOTICE: Warmup phase data is invalid and discarded due to cold start).\n"
+            "Stage 2 [Steady-State Benchmark]: First run logged p99 = 201ms. "
+            "UPDATE: that run is VOID AND RETRACTED (benchmark host was throttled). "
+            "Re-measurement was itself retracted once for a stale container image, then the final calibrated steady-state p99 is定稿 0.150s (exactly 150.0ms).\n"
+            "Stage 3 [Destructive Stress Test]: Under 50x overload p99 reached 820ms. "
+            "(NOTICE: Stage 3 is for disaster capacity ceiling reference only, not for release gating).\n\n"
+            f"{reversal_rule}"
+        ),
+        "expected": {"final_p99_ms": 150.0, "plan": "Plan-Alpha", "keep_autoscale": True, "retries_halved": False},
     })
 
     # Variant B: Stage 2 initially reported 142ms, but recalibrated to 158.5ms (> 150.0 -> Plan-Beta)

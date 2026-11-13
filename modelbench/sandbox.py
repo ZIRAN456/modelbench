@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 _HARNESS = r'''
@@ -54,7 +54,12 @@ def _install_audit_hook():
     sys.addaudithook(_hook)
 
 def _main():
-    raw = sys.stdin.read()
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    raw = sys.stdin.buffer.read().decode("utf-8")
     spec = json.loads(raw)
     code = spec["code"]
     fn_name = spec["fn_name"]
@@ -157,31 +162,84 @@ def _main():
 
         try:
             router = cls()
-            cf_received = []
+            pool = list(spec.get("unicode_cf_pool") or ["\u200b", "\u2060", "\ufeff", "\u200e"])
+            cf = (pool * 8)[:8]
+            received = []
+
             class Handler:
-                def on_event(self, p):
-                    cf_received.append(p)
-            h = Handler()
-            # Mix real Cf control characters across subscribe and publish
-            topic_sub = "orders\u200b_event\ufeff"
-            topic_pub = "orders\u2060_event\u200e"
+                def __init__(self, tag):
+                    self.tag = tag
 
-            router.subscribe(topic_sub, h.on_event)
+                def __call__(self, payload):
+                    received.append((self.tag, payload))
+
+            # NOTE: callables are plain objects (no closures), so a strong reference held by
+            # the router really is a leak and shows up in the weakref probe below.
+            h_main = Handler("main")
+            h_emoji, h_emoji_plain = Handler("emoji"), Handler("emoji_plain")
+            h_zwnj, h_zwnj_plain = Handler("zwnj"), Handler("zwnj_plain")
+
+            # --- (a) random Cf injection: two differently-polluted spellings must collapse ---
+            topic_sub = "orders" + cf[0] + "_event" + cf[1]
+            topic_pub = "orders" + cf[2] + "_event" + cf[3]
+            router.subscribe(topic_sub, h_main)
             router.publish(topic_pub, {"order_id": 999})
-
-            if len(cf_received) != 1 or cf_received[0] != {"order_id": 999}:
-                _emit({"ok": False, "error": "cf_unicode_clean_failed: handler not invoked or Cf normalization mismatch"})
+            if [(t, p) for t, p in received if t == "main"] != [("main", {"order_id": 999})]:
+                _emit({"ok": False, "error": f"cf_unicode_clean_failed: Cf pool {pool} not normalised (handler not invoked or mismatch)"})
                 return
 
-            sentinel = weakref.ref(h)
-            del h
+            # --- (a2) bound-method subscribers must survive (WeakMethod, not weakref.ref) ---
+            class Svc:
+                def __init__(self):
+                    self.hits = 0
+
+                def on_msg(self, payload):
+                    self.hits += 1
+
+            svc = Svc()
+            router.subscribe("svc_feed" + cf[6], svc.on_msg)
+            router.publish("svc_feed" + cf[7], {"n": 1})
+            if svc.hits != 1:
+                _emit({"ok": False, "error": "bound_method_lost: a bound method subscriber was garbage collected before dispatch (use weakref.WeakMethod)"})
+                return
+
+            # --- (b) ZWJ/ZWNJ must survive: they are Cf but semantically load-bearing ---
+            emoji_topic = "alert\U0001F468\u200d\U0001F469\u200d\U0001F467"
+            zwnj_topic = "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"
+            # A blanket "strip every Cf" implementation collapses these pairs, so subscribe the
+            # ZWJ/ZWNJ-free spelling too: if the two collide, ZWJ/ZWNJ were wrongly removed.
+            router.subscribe(emoji_topic, h_emoji)
+            router.subscribe(emoji_topic.replace("\u200d", ""), h_emoji_plain)
+            router.subscribe(zwnj_topic, h_zwnj)
+            router.subscribe(zwnj_topic.replace("\u200c", ""), h_zwnj_plain)
+
+            mark = len(received)
+            router.publish(emoji_topic + cf[4], {"kind": "emoji"})
+            router.publish(zwnj_topic + cf[5], {"kind": "zwnj"})
+            tags = [t for t, _ in received[mark:]]
+            if "emoji" not in tags:
+                _emit({"ok": False, "error": "zwj_stripped: U+200D inside an emoji sequence must be preserved"})
+                return
+            if "emoji_plain" in tags:
+                _emit({"ok": False, "error": "zwj_stripped: ZWJ-bearing and ZWJ-free topics must not collide (U+200D was removed)"})
+                return
+            if "zwnj" not in tags:
+                _emit({"ok": False, "error": "zwnj_stripped: U+200C inside a Persian word must be preserved"})
+                return
+            if "zwnj_plain" in tags:
+                _emit({"ok": False, "error": "zwnj_stripped: ZWNJ-bearing and ZWNJ-free topics must not collide (U+200C was removed)"})
+                return
+
+            # --- (c) weakref leak probe: the router must not keep the subscriber alive ---
+            sentinel = weakref.ref(h_main)
+            del h_main
             for _ in range(5):
                 gc.collect()
-
             if sentinel() is not None:
                 _emit({"ok": False, "error": "memory_leak: handler instance was not garbage collected (strong reference retained)"})
                 return
 
+            # --- (d) expired references must be pruned silently ---
             try:
                 router.publish(topic_pub, {"order_id": 1000})
             except Exception as exc:
@@ -192,6 +250,8 @@ def _main():
                 "ok": True,
                 "value": {
                     "cf_clean_verified": True,
+                    "zwj_preserved": True,
+                    "zwnj_preserved": True,
                     "gc_sentinel_collected": True,
                     "safe_post_gc": True,
                 }
@@ -252,6 +312,7 @@ def run_code_cases(
     check_no_mutate: bool = False,
     concurrency_test: bool = False,
     unicode_weakref_test: bool = False,
+    unicode_cf_pool: Optional[List[str]] = None,
     timeout_s: float = 5.0,
 ) -> Dict[str, Any]:
     """Execute candidate Python code inside a fresh -I isolated subprocess in a temp directory."""
@@ -269,6 +330,7 @@ def run_code_cases(
                 "check_no_mutate": check_no_mutate,
                 "concurrency_test": concurrency_test,
                 "unicode_weakref_test": unicode_weakref_test,
+                "unicode_cf_pool": unicode_cf_pool or [],
             },
             ensure_ascii=False,
         )

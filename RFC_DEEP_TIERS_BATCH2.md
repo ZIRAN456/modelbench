@@ -67,3 +67,35 @@
   - 单位穿插混入 `0.158s` 与 `148ms`；
   - 规则：`p99 <= 150.0ms` 执行 Plan-Alpha，`p99 > 150.0ms` 执行 Plan-Beta。
 - **作弊基线清零断言**：直接提取第一段数字流、抓取最后出现的数字流在嵌套反转下得分严格为 0。
+
+---
+
+## 附录 A — 退化脚本（作弊 bot）实测（v2.2.2）
+
+Hark 第二批意见第 4 条要求：不是只测"聪明解能不能过"，而是测**不读数据的退化解能不能拿分**。
+`scripts/cheat_bots.py` 实现四种盲解，按**成对**口径聚合（同组全对才记 1 个 unit）：
+
+| bot | 行为 | 42 units 命中 |
+|---|---|---|
+| `constant` | 取允许标签表中的第一个值 / 题面第一个数字 | **0 (0.0%)** |
+| `keyword` | 命中关键词（FX / MISSING / JWT / NETWORK / CLOCK / POOL）即选对应标签 | **0 (0.0%)** |
+| `last_number` | 取题面最后一个数字 | **0 (0.0%)** |
+| `superset` | 把所有允许标签一次性全交（"全都猜"） | **0 (0.0%)** |
+
+命令：`python scripts/cheat_bots.py --seed 20261112`（非 0 分即返回非零退出码，可直接进 CI）。
+
+首轮实测露过 4 个 unit（`wisdom_trap_0_conflict` / `trap_2_conflict` / `stress_clean` / `stress_long`），
+原因是这些题**答案恒为 `{"consistent": false, "computed_total": null}`**——任何盲猜都中。
+v2.2.2 为每一道补了"数字自洽"的孪生变体（`v222_audit_pair_*`，把声称的合计改成正确合计），
+成对计分后盲猜必挂，故四条均为 0。
+
+## 附录 B — v2.2.2 新增变体清单
+
+| 组 | 新增变体 | 斩杀的单边启发式 |
+|---|---|---|
+| `v222_timestamp_clash` | `reorder` + `ghost` 同卷 | 只认"出现 ABORTED 就是幽灵回滚" |
+| `v222_audit_pair_*` | `inconsistent` + `consistent` | 恒答 false / null |
+| `v22_patch_triplet` | `idempotent_noop`、`duplicate_guard`、`reverse_direction` | 不做读改写、重复追加、只会单向推 |
+| `v22_cross_audit` | `retransmit_only`、`jpy_precision` | 见重复行就报缺单、用 float 算钱 |
+| `v22_reversal_cascade` | `gamma_150ms`（恰好 150.0） | 只按 `>` 判、忽略边界 |
+| unicode 题 | 随机 Cf 池 + ZWJ/ZWNJ 共现 + bound method 探针 | 硬编码 `\u200b`、一刀切 strip 全部 Cf、`weakref.ref(绑定方法)` |

@@ -49,11 +49,13 @@ jobs:
       - name: Install package in editable mode
         run: pip install -e .
 
+      # Failures land in $GITHUB_STEP_SUMMARY + ::error:: annotations, so a red leg
+      # explains itself on the run page without opening the (JS-only) job log.
       - name: Run selftest via direct execution
-        run: python modelbench.py selftest
+        run: python scripts/ci_report.py python modelbench.py selftest
 
       - name: Run selftest via CLI entrypoint
-        run: modelbench selftest
+        run: python scripts/ci_report.py modelbench selftest
 
       - name: Run adversarial regression tests
-        run: python -m unittest discover -s tests -v
+        run: python scripts/ci_report.py python -m unittest discover -s tests -v

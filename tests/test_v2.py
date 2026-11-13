@@ -209,8 +209,11 @@ class TestSandboxSecurityAndExecution(unittest.TestCase):
         # mutation probes must not flake on slow shared CI runners (win32 subprocess
         # spawn + JSON round-trip of 25k events can exceed the 1.2s perf budget).
         loose_item = dict(perf_item, timeout_s=30.0)
+        # ...and the O(N^2) probe gets a deliberately tight copy, so it cannot finish in
+        # time on a fast runner either (absolute 6.0s was ambiguous in both directions).
+        tight_item = dict(perf_item, timeout_s=1.5)
 
-        p_slow, r_slow = grade_item(perf_item, slow_sol)
+        p_slow, r_slow = grade_item(tight_item, slow_sol)
         self.assertEqual(p_slow, 0, "O(N^2) must fail via timeout")
         self.assertIn("timeout", r_slow)
 
@@ -388,7 +391,7 @@ class TestExpanded50Suite(unittest.TestCase):
             from modelbench.scoring import units_from_suite
 
         suite = generate_suite(seed=20261112, profile="full")
-        self.assertEqual(len(suite), 57)
+        self.assertEqual(len(suite), 68)
         ids = [x["id"] for x in suite]
         self.assertEqual(len(ids), len(set(ids)), "item ids must be unique")
 
@@ -403,6 +406,10 @@ class TestExpanded50Suite(unittest.TestCase):
         self.assertGreaterEqual(per_axis["exec"], 18)
 
         # The four canary scenarios must always ship together as one paired unit.
+        self.assertEqual(
+            units["v222_timestamp_clash"]["variants"],
+            {"exec_reversal_timestamp_clash_full_reorder", "exec_reversal_timestamp_clash_full_ghost"},
+        )
         canary = units["v221_canary_rollback"]["variants"]
         self.assertEqual(
             canary,
@@ -588,14 +595,19 @@ class TestExpanded50Suite(unittest.TestCase):
         self.assertEqual(grade_item(variants["fatal"], rolled_ans, tool_trace=abort_trace)[0], 1)
 
     def test_timestamp_clash_paired_anti_cheat(self):
-        # seed 100 gives reorder_clash, seed 101 gives ghost_rollback
-        suite_reorder = {x["id"]: x for x in generate_suite(seed=100, profile="full")}
-        suite_ghost = {x["id"]: x for x in generate_suite(seed=101, profile="full")}
-
-        reorder_item = suite_reorder["exec_reversal_timestamp_clash_full"]
-        ghost_item = suite_ghost["exec_reversal_timestamp_clash_full"]
-        self.assertEqual(reorder_item.get("variant"), "reorder_clash")
-        self.assertEqual(ghost_item.get("variant"), "ghost_rollback")
+        # Both scenarios must be shipped together (no more seed-drawn single variant).
+        suite = {x["id"]: x for x in generate_suite(seed=20261112, profile="full")}
+        reorder_item = suite["exec_reversal_timestamp_clash_full_reorder"]
+        ghost_item = suite["exec_reversal_timestamp_clash_full_ghost"]
+        self.assertEqual(reorder_item.get("variant"), "reorder")
+        self.assertEqual(ghost_item.get("variant"), "ghost")
+        self.assertEqual(reorder_item.get("variant_group"), "v222_timestamp_clash")
+        self.assertEqual(ghost_item.get("variant_group"), "v222_timestamp_clash")
+        # Distractor symmetry: the rollback marker exists in BOTH variants, so it cannot be a label.
+        self.assertIn("ABORTED", reorder_item["prompt"])
+        self.assertIn("ABORTED", ghost_item["prompt"])
+        self.assertIn("RETRANSMIT", reorder_item["prompt"])
+        self.assertIn("RETRANSMIT", ghost_item["prompt"])
 
         # Cheat 1: Text-tail heuristic picks Session-B -> fails on reorder_clash
         cheat_tail_ans = json.dumps({"effective_timeout_ms": 1800, "active_policy": "weighted_random", "winning_session": "Session-B"})
@@ -606,6 +618,93 @@ class TestExpanded50Suite(unittest.TestCase):
         cheat_ghost_ans = json.dumps({"effective_timeout_ms": 5000, "active_policy": "experimental_ai", "winning_session": "Session-D"})
         p_ghost, _ = grade_item(ghost_item, cheat_ghost_ans)
         self.assertEqual(p_ghost, 0)
+
+
+    def test_v222_new_variants_anti_cheat(self):
+        """v2.2.2 additions: boundary, idempotent, duplicate and retransmit variants."""
+        suite = {x["id"]: x for x in generate_suite(seed=20261112, profile="full")}
+
+        # --- 1) exactly-on-the-boundary cascade variant: 150.0 must take the `<=` branch ---
+        gamma = suite["exec_reversal_conditional_cascading_gamma"]
+        self.assertEqual(gamma["expected"]["final_p99_ms"], 150.0)
+        self.assertEqual(gamma["expected"]["plan"], "Plan-Alpha")
+        wrong_branch = json.dumps({"final_p99_ms": 150.0, "plan": "Plan-Beta", "keep_autoscale": False, "retries_halved": True})
+        self.assertEqual(grade_item(gamma, wrong_branch)[0], 0)
+        self.assertEqual(grade_item(gamma, json.dumps(gamma["expected"]))[0], 1)
+
+        # --- 2) idempotent triplet: an audited redundant write must fail ---
+        noop = suite["exec_patch_atomic_triplet_idempotent"]
+        write_happy = {
+            "called_tools": ["read_mock_file", "write_mock_config"],
+            "calls": [
+                {"name": "read_mock_file", "arguments": '{"path":"/etc/monitor/ratelimit.json"}'},
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/monitor/ratelimit.json","key":"qps","value":200}'},
+            ],
+            "rounds_exceeded": False,
+            "final_fs": {"files": {
+                "/etc/gateway/routes.json": {"stage": "canary"},
+                "/etc/security/auth.json": {"scope": "beta_tester"},
+                "/etc/monitor/ratelimit.json": {"qps": 200},
+            }},
+        }
+        p_noop, r_noop = grade_item(noop, json.dumps(noop["expected"]), tool_trace=write_happy)
+        self.assertEqual(p_noop, 0, "redundant write must be rejected")
+        self.assertIn("forbidden_tool_called", r_noop)
+
+        read_only = dict(write_happy, called_tools=["read_mock_file"],
+                         calls=[{"name": "read_mock_file", "arguments": '{"path":"/etc/monitor/ratelimit.json"}'}])
+        self.assertEqual(grade_item(noop, json.dumps(noop["expected"]), tool_trace=read_only)[0], 1)
+
+        # --- 3) duplicate guard: appending a second beta_tester must fail ---
+        dup = suite["exec_patch_atomic_triplet_duplicate"]
+        dup_fs = {
+            "called_tools": ["write_mock_config"],
+            "calls": [{"name": "write_mock_config", "arguments": '{"path":"/etc/security/auth.json","key":"roles","value":["standard","beta_tester","beta_tester"]}'}],
+            "rounds_exceeded": False,
+            "final_fs": {"files": {
+                "/etc/gateway/routes.json": {"stage": "canary"},
+                "/etc/security/auth.json": {"roles": ["standard", "beta_tester", "beta_tester"]},
+                "/etc/monitor/ratelimit.json": {"qps": 200},
+            }},
+        }
+        self.assertEqual(grade_item(dup, json.dumps(dup["expected"]), tool_trace=dup_fs)[0], 0)
+        dup_ok = dict(
+            dup_fs,
+            called_tools=["read_mock_file", "write_mock_config"],
+            calls=[
+                {"name": "read_mock_file", "arguments": '{"path":"/etc/security/auth.json"}'},
+                {"name": "write_mock_config", "arguments": '{"path":"/etc/security/auth.json","key":"roles","value":["standard","beta_tester"]}'},
+            ],
+            final_fs={"files": {
+            "/etc/gateway/routes.json": {"stage": "canary"},
+            "/etc/security/auth.json": {"roles": ["standard", "beta_tester"]},
+            "/etc/monitor/ratelimit.json": {"qps": 200},
+            }},
+        )
+        self.assertEqual(grade_item(dup, json.dumps(dup["expected"]), tool_trace=dup_ok)[0], 1)
+
+        # --- 4) retransmission: flagging it as MISSING_SETTLEMENT must fail ---
+        rt = suite["wisdom_cross_audit_drift_tz_retransmit"]
+        naive = json.dumps({"diff_type": ["MISSING_SETTLEMENT"], "drift_amount": 0.0, "missing_ids": ["ord_202611_02"]})
+        self.assertEqual(grade_item(rt, naive)[0], 0)
+        self.assertEqual(grade_item(rt, json.dumps(rt["expected"]))[0], 1)
+
+        # --- 5) JPY precision: a float-rounding phantom FX_DRIFT must fail ---
+        jpy = suite["wisdom_cross_audit_drift_tz_jpy"]
+        phantom = json.dumps({"diff_type": ["FX_DRIFT"], "drift_amount": 0.048, "missing_ids": []})
+        self.assertEqual(grade_item(jpy, phantom)[0], 0)
+        self.assertEqual(grade_item(jpy, json.dumps(jpy["expected"]))[0], 1)
+
+    def test_degenerate_cheat_bots_score_zero(self):
+        """Hark requirement #4: constant/keyword/last-number/superset bots must score 0."""
+        import importlib.util, os as _os
+        path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "scripts", "cheat_bots.py")
+        spec = importlib.util.spec_from_file_location("cheat_bots", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        res = mod.run(seed=20261112)
+        for bot, s in res["bots"].items():
+            self.assertEqual(s["score_pct"], 0.0, f"{bot} scored {s['score_pct']}% on {s['leaked_units']}")
 
     def test_sandbox_audit_hook_blocks_io_net_proc_but_allows_stdlib(self):
         try:
@@ -703,7 +802,7 @@ class TestDeepBatch2Suite(unittest.TestCase):
 
     def test_batch2_catalog_count(self):
         # 4 cross_audit + 4 chain_shadow + 1 unicode_leak + 2 patch_triplet + 2 reversal_cascade = 13 items
-        self.assertEqual(len(self.items), 13)
+        self.assertEqual(len(self.items), 19)
 
     def test_item1_cross_audit_2x2_matrix_and_anti_cheat(self):
         # 1. Reference solutions for all 4 variants
@@ -770,7 +869,7 @@ class TestDeepBatch2Suite(unittest.TestCase):
             "        self._subscribers = {}\n"
             "    def _clean_topic(self, topic: str) -> str:\n"
             "        normalized = unicodedata.normalize('NFKC', str(topic))\n"
-            "        return ''.join(c for c in normalized if unicodedata.category(c) != 'Cf')\n"
+            "        return ''.join(c for c in normalized if unicodedata.category(c) != 'Cf' or c in '\\u200c\\u200d')\n"
             "    def subscribe(self, topic: str, handler):\n"
             "        t = self._clean_topic(topic)\n"
             "        if hasattr(handler, '__self__') and hasattr(handler, '__func__'):\n"
@@ -820,7 +919,7 @@ class TestDeepBatch2Suite(unittest.TestCase):
             "    def __init__(self):\n"
             "        self._subscribers = {}\n"
             "    def _clean_topic(self, topic: str) -> str:\n"
-            "        return ''.join(c for c in unicodedata.normalize('NFKC', str(topic)) if unicodedata.category(c) != 'Cf')\n"
+            "        return ''.join(c for c in unicodedata.normalize('NFKC', str(topic)) if unicodedata.category(c) != 'Cf' or c in '\\u200c\\u200d')\n"
             "    def subscribe(self, topic: str, handler):\n"
             "        self._subscribers.setdefault(self._clean_topic(topic), []).append(handler)\n"
             "    def publish(self, topic: str, payload):\n"
@@ -840,7 +939,7 @@ class TestDeepBatch2Suite(unittest.TestCase):
             "    def __init__(self):\n"
             "        self._subscribers = {}\n"
             "    def _clean_topic(self, topic: str) -> str:\n"
-            "        return ''.join(c for c in unicodedata.normalize('NFKC', str(topic)) if unicodedata.category(c) != 'Cf')\n"
+            "        return ''.join(c for c in unicodedata.normalize('NFKC', str(topic)) if unicodedata.category(c) != 'Cf' or c in '\\u200c\\u200d')\n"
             "    def subscribe(self, topic: str, handler):\n"
             "        self._subscribers.setdefault(self._clean_topic(topic), []).append(weakref.ref(handler))\n"
             "    def publish(self, topic: str, payload):\n"
@@ -851,7 +950,7 @@ class TestDeepBatch2Suite(unittest.TestCase):
         )
         p_c3, r_c3 = grade_item(item, cheat_dead_weakref)
         self.assertEqual(p_c3, 0)
-        self.assertIn("cf_unicode_clean_failed", r_c3)
+        self.assertTrue("bound_method_lost" in r_c3 or "dead" in r_c3.lower(), r_c3)
 
     def test_item4_atomic_triplet_rollback_and_anti_cheat(self):
         commit_item = self.items["exec_patch_atomic_triplet_commit"]

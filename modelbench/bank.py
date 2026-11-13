@@ -11,6 +11,7 @@ Stability Probes:
 """
 
 import random
+import re
 from typing import Any, Dict, List
 
 from .bank_extra import make_batch2_deep_items, make_extra_exec_items, make_extra_wisdom_items
@@ -947,69 +948,115 @@ def _make_deep_exec_items(rng: random.Random, full: bool) -> List[Dict[str, Any]
         },
     ]
 
-    # Multi-session timestamp clash with network out-of-order retransmission vs ghost rollback
+    # Multi-session timestamp clash: BOTH scenarios ship together as one paired group.
+    # Distractors are present in both variants (a rollback line in the reorder variant,
+    # a stale retransmit line in the ghost variant), so no surface marker labels the case.
     chunk_chars = 15000 if full else 4200
     p1 = "\n".join(make_heterogeneous_logs(rng, chunk_chars, turn_prefix="LOG_S1"))
     p2 = "\n".join(make_heterogeneous_logs(rng, chunk_chars, turn_prefix="LOG_S2"))
     p3 = "\n".join(make_heterogeneous_logs(rng, chunk_chars, turn_prefix="LOG_S3"))
 
-    is_ghost_scenario = (rng.random() < 0.5)
-    if is_ghost_scenario:
-        # Variant B: Session-D has maximum timestamp and highest rev, but aborted by explicit rollback
-        log_session_a = "[2026-11-13T09:30:15Z Session-A INFO rev=10]: Init baseline timeout_ms=1000, policy='round_robin'"
-        log_session_c = "[2026-11-13T10:18:45Z Session-C COMMITTED rev=42]: Updated effective configuration to timeout_ms=3200, policy='least_conn'"
-        log_session_d_attempt = "[2026-11-13T10:25:00Z Session-D STAGED rev=50]: Proposing tentative update timeout_ms=5000, policy='experimental_ai'"
-        log_session_d_abort = "[2026-11-13T10:25:02Z Session-D CRITICAL]: Upstream validation failed -> TRANSACTION_ROLLBACK / ABORTED! Status: REVERTED_TO_REV_42"
+    _clash_prompt = (
+        "Analyze the distributed gateway multi-session trace below to determine the effective runtime configuration.\n\n"
+        "Trace Data:\n"
+        "{transcript}\n\n"
+        "Rules:\n"
+        "1) Packets from different sessions may arrive out-of-order due to network delays. Physical timestamp and revision dictate progression.\n"
+        "2) Any uncommitted transaction ending in TRANSACTION_ROLLBACK or ABORTED is void and must be ignored.\n"
+        "Output ONLY JSON (no fences):\n"
+        '{"effective_timeout_ms": <int>, "active_policy": "<str>", "winning_session": "<str>"}'
+    )
 
-        transcript = (
-            f"{log_session_a}\n"
-            f"{p1}\n"
-            f"{log_session_c}\n"
-            f"{p2}\n"
-            f"{log_session_d_attempt}\n"
-            f"{log_session_d_abort}\n"
-            f"{p3}\n"
-        )
-        expected_ans = {"effective_timeout_ms": 3200, "active_policy": "least_conn", "winning_session": "Session-C"}
-        variant_tag = "ghost_rollback"
-    else:
-        # Variant A: Session-C has latest valid timestamp/rev, but appears earlier in transcript than delayed Session-B
-        log_session_a = "[2026-11-13T09:30:15Z Session-A INFO rev=10]: Init baseline timeout_ms=1000, policy='round_robin'"
-        log_session_c = "[2026-11-13T10:18:45Z Session-C COMMITTED rev=42]: Updated effective configuration to timeout_ms=2500, policy='canary_adaptive'"
-        log_session_b_delayed = "[2026-11-13T10:14:02Z Session-B RETRANSMIT rev=41]: Delayed network packet arriving out-of-order timeout_ms=1800, policy='weighted_random'"
+    _base_a = "[2026-11-13T09:30:15Z Session-A INFO rev=10]: Init baseline timeout_ms=1000, policy='round_robin'"
 
-        transcript = (
-            f"{log_session_a}\n"
-            f"{log_session_c}\n"
-            f"{p1}\n"
-            f"{p2}\n"
-            f"{log_session_b_delayed}\n"
-            f"{p3}\n"
-        )
-        expected_ans = {"effective_timeout_ms": 2500, "active_policy": "canary_adaptive", "winning_session": "Session-C"}
-        variant_tag = "reorder_clash"
+    # Variant 1: reorder clash (a delayed Session-B packet arrives after a newer commit)
+    reorder_transcript = (
+        f"{_base_a}\n"
+        f"{p1}\n"
+        "[2026-11-13T09:45:00Z Session-X STAGED rev=12]: tentative update timeout_ms=9999, policy='experimental_ai'\n"
+        "[2026-11-13T09:45:02Z Session-X CRITICAL]: validation failed -> TRANSACTION_ROLLBACK / ABORTED! Status: REVERTED_TO_REV_10\n"
+        f"{p2}\n"
+        "[2026-11-13T10:18:45Z Session-C COMMITTED rev=42]: Updated effective configuration to timeout_ms=2500, policy='canary_adaptive'\n"
+        f"{p3}\n"
+        "[2026-11-13T10:14:02Z Session-B RETRANSMIT rev=41]: Delayed network packet arriving out-of-order timeout_ms=1800, policy='weighted_random'\n"
+    )
+    reorder_expected = {"effective_timeout_ms": 2500, "active_policy": "canary_adaptive", "winning_session": "Session-C"}
 
-    items.append({
-        "id": f"exec_reversal_timestamp_clash_{'full' if full else 'quick'}",
-        "axis": "exec",
-        "cat": "multi_reversal",
-        "grader": "json_exact",
-        "variant": variant_tag,
-        "forbid_fences": True,
-        "forbid_prose": True,
-        "prompt": (
-            "Analyze the distributed gateway multi-session trace below to determine the effective runtime configuration.\n\n"
-            "Trace Data:\n"
-            f"{transcript}\n\n"
-            "Rules:\n"
-            "1) Packets from different sessions may arrive out-of-order due to network delays. Physical timestamp and revision dictate progression.\n"
-            "2) Any uncommitted transaction ending in TRANSACTION_ROLLBACK or ABORTED is void and must be ignored.\n"
-            "Output ONLY JSON (no fences):\n"
-            '{"effective_timeout_ms": <int>, "active_policy": "<str>", "winning_session": "<str>"}'
-        ),
-        "expected": expected_ans,
-    })
+    # Variant 2: ghost rollback (highest timestamp/rev was aborted, must be ignored)
+    ghost_transcript = (
+        f"{_base_a}\n"
+        f"{p1}\n"
+        "[2026-11-13T10:05:11Z Session-B RETRANSMIT rev=38]: Delayed network packet arriving out-of-order timeout_ms=1800, policy='weighted_random'\n"
+        f"{p2}\n"
+        "[2026-11-13T10:18:45Z Session-C COMMITTED rev=42]: Updated effective configuration to timeout_ms=3200, policy='least_conn'\n"
+        f"{p3}\n"
+        "[2026-11-13T10:25:00Z Session-D STAGED rev=50]: Proposing tentative update timeout_ms=5000, policy='experimental_ai'\n"
+        "[2026-11-13T10:25:02Z Session-D CRITICAL]: Upstream validation failed -> TRANSACTION_ROLLBACK / ABORTED! Status: REVERTED_TO_REV_42\n"
+    )
+    ghost_expected = {"effective_timeout_ms": 3200, "active_policy": "least_conn", "winning_session": "Session-C"}
+
+    for suffix, transcript, expected_ans in (
+        ("reorder", reorder_transcript, reorder_expected),
+        ("ghost", ghost_transcript, ghost_expected),
+    ):
+        items.append({
+            "id": f"exec_reversal_timestamp_clash_{'full' if full else 'quick'}_{suffix}",
+            "axis": "exec",
+            "cat": "multi_reversal",
+            "grader": "json_exact",
+            "variant_group": "v222_timestamp_clash",
+            "variant": suffix,
+            "forbid_fences": True,
+            "forbid_prose": True,
+            "prompt": _clash_prompt.replace("{transcript}", transcript),
+            "expected": expected_ans,
+        })
     return items
+
+
+
+_AUDIT_COMP_RE = re.compile(r"\b([A-Za-z]{3,})\s*=\s*(\d+)(k?)\b")
+_AUDIT_TOTAL_RE = re.compile(r"(Total[^=]{0,60}=\s*)(\d+)(k?)\b")
+
+
+def _pair_audit_trap_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Give every always-`consistent: false` audit item a consistent twin.
+
+    A single answer shape ("false + null") is a free win for any constant bot,
+    so each audit trap is paired with a sibling whose stated total is correct:
+    only an item that actually re-adds the components earns the unit.
+    """
+    out: List[Dict[str, Any]] = []
+    for item in items:
+        exp = item.get("expected")
+        out.append(item)
+        if not (isinstance(exp, dict) and "consistent" in exp and exp.get("computed_total") is None):
+            continue
+        prompt = item.get("prompt") or ""
+        m = _AUDIT_TOTAL_RE.search(prompt)
+        comps = _AUDIT_COMP_RE.findall(prompt[: m.start()] if m else prompt)
+        if len(comps) < 2 or not m:
+            continue
+        total = sum(int(num) * (1000 if suf == "k" else 1) for _, num, suf in comps)
+        raw_total = total // 1000 if m.group(3) == "k" else total
+        sib_prompt = prompt[: m.start(2)] + str(raw_total) + prompt[m.end(2):]
+        group = f"v222_audit_pair_{item['id']}"
+        item["variant_group"] = group
+        item["variant"] = "inconsistent"
+        out.append({
+            "id": item["id"] + "_consistent_true",
+            "axis": item["axis"],
+            "cat": item["cat"],
+            "grader": item["grader"],
+            "variant_group": group,
+            "variant": "consistent",
+            "float_tol": item.get("float_tol"),
+            "forbid_fences": True,
+            "forbid_prose": True,
+            "prompt": sib_prompt,
+            "expected": {"consistent": True, "computed_total": total},
+        })
+    return out
 
 
 def generate_suite(*, seed: int = 20261112, profile: str = "quick") -> List[Dict[str, Any]]:
@@ -1028,4 +1075,4 @@ def generate_suite(*, seed: int = 20261112, profile: str = "quick") -> List[Dict
     items.extend(make_extra_exec_items(rng, full, make_heterogeneous_logs, _MOCK_TOOLS_SPEC))
     items.extend(make_batch2_deep_items(rng, full=full, tools_spec=_MOCK_TOOLS_SPEC))
     items.extend(_make_redline_items(rng))
-    return items
+    return _pair_audit_trap_items(items)

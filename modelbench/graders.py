@@ -189,6 +189,7 @@ def _grade_code_fix(item: Dict[str, Any], content: str) -> Tuple[int, str]:
         check_no_mutate=bool(item.get("check_no_mutate", False)),
         concurrency_test=bool(item.get("concurrency_test", False)),
         unicode_weakref_test=bool(item.get("unicode_weakref_test", False)),
+        unicode_cf_pool=list(item.get("unicode_cf_pool") or []),
         timeout_s=float(item.get("timeout_s", 5.0)),
     )
     if not sb["ok"]:

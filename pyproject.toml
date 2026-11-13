@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "modelbench"
-version = "2.2.1"
+version = "2.2.2"
 description = "Zero-dependency deterministic benchmark for practical LLM & Agent wisdom, execution, and stability"
 readme = "README.md"
 requires-python = ">=3.10"

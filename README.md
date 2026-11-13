@@ -23,7 +23,7 @@
 
 ## 57-Item Practical Suite / 42 Paired Scoring Units (`--profile full`)
 
-**57 raw items collapse into 42 scoring units** (19 Wisdom / 23 Execution; `--profile quick` runs a faster subset with shorter contexts). Five categories that every model used to ace are now replaced by paired **2x2 adversarial matrices** (double-fault / single-fault A / single-fault B / clean) scored all-or-nothing:
+**68 raw items collapse into 42 scoring units** (19 Wisdom / 23 Execution; `--profile quick` runs a faster subset with shorter contexts). Five categories that every model used to ace are now replaced by paired **2x2 adversarial matrices** (double-fault / single-fault A / single-fault B / clean) scored all-or-nothing:
 
 | Axis | Categories | What It Catches |
 |---|---|---|
