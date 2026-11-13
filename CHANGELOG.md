@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.2.3 — 2026-11-13
+
+Prompt-only fix found by the first real-model run of the new variants.
+
+### False negative in `v22_cross_audit` / `dual_defect`
+- deepseek-v4.1-flash answered `["CLEAN", "FX_DRIFT", "MISSING_SETTLEMENT"]`.
+  It had diagnosed both defects correctly but also tagged the case `CLEAN`
+  ("nothing else is wrong"), and the exact-list comparison failed it.
+- The rule block now states: **CLEAN is exclusive** — never combine it with
+  `FX_DRIFT` / `MISSING_SETTLEMENT`.
+- Re-run: 6/6 pass, paired unit 100%. The `missing_only` variant that had
+  truncated at 8192 tokens earlier also passed in 8.0s, so that failure was model
+  verbosity, not an item defect.
+
+### Measured on the new groups (deepseek-v4.1-flash, 1 rep)
+| group | items | result |
+|---|---|---|
+| `v22_cross_audit` | 6 | 6/6 after the fix (unit 1/1) |
+| `v22_patch_triplet` | 5 | 5/5 (unit 1/1) |
+| `v22_reversal_cascade` | 3 | 3/3, incl. `gamma_150ms` boundary (unit 1/1) |
+
 ## v2.2.2 — 2026-11-13
 
 Second-pass close-out of the Hark red-team list: the deep-tier matrices were

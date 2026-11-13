@@ -415,6 +415,8 @@ def make_batch2_deep_items(rng: random.Random, full: bool, tools_spec: List[Dict
         "5) Amount comparison tolerance is +/- 1 minor unit of the settlement currency; anything larger is a real drift.\n"
         "6) The bank ledger may contain RETRANSMITTED rows for the same settlement_batch: deduplicate them by settlement_batch. "
         "A retransmission is NOT a missing settlement and NOT a drift.\n"
+        "7) CLEAN is exclusive: report it ONLY when the books reconcile with zero defects. "
+        "Never combine CLEAN with FX_DRIFT or MISSING_SETTLEMENT.\n"
         "Allowed diff_type list values: [\"CLEAN\", \"FX_DRIFT\", \"MISSING_SETTLEMENT\"].\n"
         "Output ONLY JSON (no fences): {\"diff_type\": [<str>, ...], \"drift_amount\": <float>, \"missing_ids\": [<str>, ...]}"
     )
