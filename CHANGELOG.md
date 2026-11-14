@@ -18,7 +18,9 @@
 ### Compatibility
 
 - Prompt text changed for audit items, so results from earlier runs on those
-  items are not directly comparable. No grader or expected-value changes.
+  items are not directly comparable. No grader or expected-value changes, but
+  the suite fingerprint moved from `f0bf92c0` to `18489571` because
+  `grader_fingerprint()` also hashes `bank.py`.
 
 ## v2.2.8 — 2026-11-14
 
@@ -47,7 +49,8 @@
 
 - Suite item prompts/expected values changed for the three items above, so
   scores from earlier runs are not directly comparable on those items. No
-  grader logic changed; `grader_fingerprint` is unchanged.
+  grader logic changed, but `grader_fingerprint()` hashes `bank.py` as well, so
+  the suite fingerprint moved from `20c7223a` to `f0bf92c0`.
 
 ## v2.2.7 — 2026-11-14
 
